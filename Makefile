@@ -1,7 +1,7 @@
 # Makefile for Dawn Lua Web Framework
 
 PACKAGE=dawn
-VERSION=1.0-1
+VERSION=1.0-2
 ROCKSPEC=$(PACKAGE)-$(VERSION).rockspec
 BUILD_DIR=build
 
@@ -28,7 +28,7 @@ pack:
 ## Step 4: Upload to LuaRocks
 upload:
 	@echo "🚀 Uploading to LuaRocks..."
-	cd $(BUILD_DIR) && luarocks upload $(ROCKSPEC) --api-key=$$LUAROCKS_API_KEY
+	cd $(BUILD_DIR) && luarocks upload $(ROCKSPEC) --api-key=aFKR81EKku2cNthTNPcjZ9EsA5ieQU7r0ijG3HqT
 
 ## Show help
 help:

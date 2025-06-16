@@ -4,16 +4,14 @@ set -e
 
 # === CONFIGURATION ===
 PACKAGE="dawn"
-VERSION="1.0-1"
+VERSION="1.0-3"
 ROCKSPEC_NAME="$PACKAGE-$VERSION.rockspec"
-SO_MODULE_NAME="dawn.server.core"  # require("dawn.server.core")
 C_SRC="server/check_version.cpp"
-SO_FILENAME="core.so"
 
 SRC_DIR=$(pwd)
 BUILD_DIR="$SRC_DIR/build"
 MODULE_ROOT="$BUILD_DIR/dawn"
-ROCKSPEC_PATH="$BUILD_DIR/$ROCKSPEC_NAME"
+ROCKSPEC_PATH="$ROCKSPEC_NAME"
 
 # === 0. Install Build Dependencies ===
 echo "[0/6] Installing system dependencies..."
@@ -42,8 +40,8 @@ package = "$PACKAGE"
 version = "$VERSION"
 
 source = {
-   url = "git+https://github.com/winslygeorge/dawn.git",
-   branch = "master"
+   url = "https://github.com/winslygeorge/dawn/archive/refs/heads/master.zip",
+   branch = "dawn-master"
 }
 
 description = {
@@ -82,11 +80,6 @@ find "$MODULE_ROOT" -name "*.lua" | while read luac_file; do
   mod_name="${mod_name//\//.}"
   echo "      [\"$mod_name\"] = \"dawn/${mod_path}\"," >> "$ROCKSPEC_PATH"
 done
-
-# Add compiled .so if present
-if [ -n "$SO_FILENAME" ]; then
-  echo "      [\"$SO_MODULE_NAME\"] = \"dawn/server/$SO_FILENAME\"," >> "$ROCKSPEC_PATH"
-fi
 
 # Close the rockspec
 cat >> "$ROCKSPEC_PATH" <<EOF

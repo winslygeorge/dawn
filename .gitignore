@@ -1,0 +1,15 @@
+# Build outputs
+build/
+*.luac
+*.so
+*.rock
+
+# LuaRocks files
+*.rockspec~
+*.rock
+
+# Editor and OS files
+.DS_Store
+*.swp
+*.bak
+*.tmp
