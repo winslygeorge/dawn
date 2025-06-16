@@ -38,7 +38,7 @@ function DawnSockets:new(parent_supervisor, shared_state, options)
     -- Use the provided state_management or default to InMemoryBackend
     self.state_management =  options.state.state_management["__active__"] and options.state.state_management["__active__"] or options.state.state_management["__default__"]
     self.state_management = self.state_management or options.state.state_management["__default__"]:new()
-    self.state_management:init(options.state_management or {})
+    self.state_management:init(options.state_management_options or {})
 
     self.shared.sockets = self
 

@@ -31,7 +31,7 @@
 -- local html = comp:build()
 -- ```
 
-local viewEngine = require("lustache_renderer")
+local viewEngine = require("layout.renderer.lustache_renderer")
 local css_helper = require("utils.css_helper")
 
 local FunctionalComponent = {}

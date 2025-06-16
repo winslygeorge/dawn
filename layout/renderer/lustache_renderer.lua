@@ -1,7 +1,7 @@
 
  local lustache = require("lustache")
 local M = {}
-local TEMPLATE_DIR = "./../../views/"
+local TEMPLATE_DIR = "./views/"
 local CACHED_TEMPLATES = {} -- Simple in-memory cache for template content
 
 -- Function to get a template path
