@@ -1,7 +1,7 @@
 # Makefile for Dawn Lua Web Framework
 
 PACKAGE=dawn
-VERSION=1.0-4
+VERSION=1.0-6
 ROCKSPEC=$(PACKAGE)-$(VERSION).rockspec
 BUILD_DIR=build
 

@@ -1,8 +1,8 @@
 package = "dawn"
-version = "1.0-4"
+version = "1.0-6"
 
 source = {
-   url = "https://github.com/winslygeorge/dawn/archive/master.zip",
+   url = "https://github.com/winslygeorge/dawn/archive/refs/heads/master.zip",
    dir = "dawn-master"
 }
 
@@ -52,7 +52,6 @@ build = {
       ["dawn_sockets"] = "build/dawn/server/dawn_sockets.lua",
       ["websockets.presence_interface"] = "build/dawn/server/websockets/presence_interface.lua",
       ["utils.query_extractor"] = "build/dawn/utils/query_extractor.lua",
-      ["utils.uuid"] = "build/dawn/utils/uuid.lua",
       ["utils.queue"] = "build/dawn/utils/queue.lua",
       ["utils.css_helper"] = "build/dawn/utils/css_helper.lua",
       ["utils.log_level"] = "build/dawn/utils/log_level.lua",
@@ -64,5 +63,6 @@ build = {
       ["utils.logger"] = "build/dawn/utils/logger.lua",
       ["runtime.scheduler"] = "build/dawn/runtime/scheduler.lua",
       ["runtime.loop"] = "build/dawn/runtime/loop.lua",
+      ["utils.uuid"] = "build/dawn/utils/uuid.lua"
    }
 }
