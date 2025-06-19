@@ -31,7 +31,12 @@ dependencies = {
 }
 
 build = {
-   type = "builtin",
+   type = "command",
+     build_command = [[
+      chmod +x build.sh
+      sudo make clean
+      sudo make all
+   ]],
    modules = {
       ["layout.renderer.layout_model"] = "build/dawn/layout/renderer/layout_model.lua",
       ["layout.renderer.lustache_renderer"] = "build/dawn/layout/renderer/lustache_renderer.lua",
