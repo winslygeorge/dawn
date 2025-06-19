@@ -468,7 +468,7 @@ end
                         local fake_req = {
                             method = "WS",
                             url = routePath,
-                            headers = {"x-forwarded-for", get_ws_id(ws)},
+                            headers = {["x-forwarded-for"] = get_ws_id(ws)},
                             ws = ws
                         }
                         local fake_res = {}
