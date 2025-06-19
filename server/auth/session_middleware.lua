@@ -16,6 +16,8 @@ return function(options)
     local session_store = options.store or {}
 
     return function(req, res, next)
+        if req.method == "WS" then next() return end
+
         local cookies = parse_cookies(req._raw:getHeader("cookie"))
         local sid = cookies[cookie_name]
 

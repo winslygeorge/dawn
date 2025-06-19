@@ -1,7 +1,7 @@
 # Makefile for Dawn Lua Web Framework
 
 PACKAGE=dawn
-VERSION=1.0-2
+VERSION=1.0-4
 ROCKSPEC=$(PACKAGE)-$(VERSION).rockspec
 BUILD_DIR=build
 
@@ -19,6 +19,7 @@ build:
 clean:
 	@echo "🧹 Cleaning build directory..."
 	rm -rf $(BUILD_DIR)
+	rm -f *.rock 
 
 ## Step 3: Package into .rock file
 pack:

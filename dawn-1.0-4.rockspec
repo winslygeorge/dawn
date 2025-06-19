@@ -1,9 +1,9 @@
 package = "dawn"
-version = "1.0-3"
+version = "1.0-4"
 
 source = {
-   url = "https://github.com/winslygeorge/dawn/archive/refs/heads/master.zip",
-   branch = "dawn-master"
+   url = "https://github.com/winslygeorge/dawn/archive/master.zip",
+   dir = "dawn-master"
 }
 
 description = {

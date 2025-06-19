@@ -7,6 +7,9 @@ return function(options)
     assert(options and options.secret, "JWT middleware requires a 'secret'")
 
     return function(req, res, next)
+
+        
+
         local auth_header = ""
         if req._raw then 
          auth_header = req._raw:getHeader("authorization") or ""

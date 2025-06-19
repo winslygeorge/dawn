@@ -4,7 +4,7 @@ set -e
 
 # === CONFIGURATION ===
 PACKAGE="dawn"
-VERSION="1.0-3"
+VERSION="1.0-4"
 ROCKSPEC_NAME="$PACKAGE-$VERSION.rockspec"
 C_SRC="server/check_version.cpp"
 
@@ -33,59 +33,59 @@ find "$SRC_DIR" -name "*.lua" | while read lua_file; do
 done
 
 
-# === 4. Generate .rockspec ===
-echo "[4/6] Generating rockspec..."
-cat > "$ROCKSPEC_PATH" <<EOF
-package = "$PACKAGE"
-version = "$VERSION"
+# # === 4. Generate .rockspec ===
+# echo "[4/6] Generating rockspec..."
+# cat > "$ROCKSPEC_PATH" <<EOF
+# package = "$PACKAGE"
+# version = "$VERSION"
 
-source = {
-   url = "https://github.com/winslygeorge/dawn/archive/refs/heads/master.zip",
-   branch = "dawn-master"
-}
+# source = {
+#    url = "https://github.com/winslygeorge/dawn/archive/refs/heads/master.zip",
+#    branch = "dawn-master"
+# }
 
-description = {
-   summary = "🌄 Dawn Framework Overview",
-   detailed = [[
-      Dawn is a modular, async-capable Lua web framework inspired by the architectural philosophy of Phoenix (Elixir) and Express (Node.js). It supports:
+# description = {
+#    summary = "🌄 Dawn Framework Overview",
+#    detailed = [[
+#       Dawn is a modular, async-capable Lua web framework inspired by the architectural philosophy of Phoenix (Elixir) and Express (Node.js). It supports:
 
-      - RESTful HTTP routing
-      - Middleware pipelines
-      - JWT-based authentication
-      - WebSockets with presence, pub/sub, and modular event hooks
-      - Real-time components
-      - Server-side rendering with Lustache
-   ]],
-   license = "MIT"
-}
+#       - RESTful HTTP routing
+#       - Middleware pipelines
+#       - JWT-based authentication
+#       - WebSockets with presence, pub/sub, and modular event hooks
+#       - Real-time components
+#       - Server-side rendering with Lustache
+#    ]],
+#    license = "MIT"
+# }
 
-dependencies = {
-   "luv",
-   "uwebsockets",
-   "dkjson",
-   "net-url",
-   "lustache",
-   "lua-zlib"
-}
+# dependencies = {
+#    "luv",
+#    "uwebsockets",
+#    "dkjson",
+#    "net-url",
+#    "lustache",
+#    "lua-zlib"
+# }
 
-build = {
-   type = "builtin",
-   modules = {
-EOF
+# build = {
+#    type = "builtin",
+#    modules = {
+# EOF
 
-# Add .luac modules
-find "$MODULE_ROOT" -name "*.lua" | while read luac_file; do
-  mod_path="${luac_file#$MODULE_ROOT/}"
-  mod_name="${mod_path%.lua}"
-  mod_name="${mod_name//\//.}"
-  echo "      [\"$mod_name\"] = \"dawn/${mod_path}\"," >> "$ROCKSPEC_PATH"
-done
+# # Add .luac modules
+# find "$MODULE_ROOT" -name "*.lua" | while read luac_file; do
+#   mod_path="${luac_file#$MODULE_ROOT/}"
+#   mod_name="${mod_path%.lua}"
+#   mod_name="${mod_name//\//.}"
+#   echo "      [\"$mod_name\"] = \"dawn/${mod_path}\"," >> "$ROCKSPEC_PATH"
+# done
 
-# Close the rockspec
-cat >> "$ROCKSPEC_PATH" <<EOF
-   }
-}
-EOF
+# # Close the rockspec
+# cat >> "$ROCKSPEC_PATH" <<EOF
+#    }
+# }
+# EOF
 
 # === 5. Done ===
 echo "[5/6] ✅ Build complete"
@@ -94,6 +94,5 @@ echo "Generated rockspec: $ROCKSPEC_PATH"
 
 # === 6. Packaging Reminder ===
 echo "[6/6] To package and upload:"
-echo "  cd build"
 echo "  luarocks pack $ROCKSPEC_NAME"
 echo "  luarocks upload $ROCKSPEC_NAME --api-key=YOUR_API_KEY"

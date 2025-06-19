@@ -203,7 +203,7 @@ function M.cleanup_all()
     return removed_total
 end
 
-
+M.init(config)
 
 load_store()
 

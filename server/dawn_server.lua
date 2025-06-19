@@ -448,6 +448,16 @@ function DawnServer:run()
         end
     end
 
+        local function get_ws_id(ws)
+    if ws then
+        local get_id_func = getmetatable(ws).get_id
+        return get_id_func(ws)
+    else
+        print("Error: WebSocket object is nil or does not have get_id method.")
+        return nil
+    end
+end
+
     local function registerRouteHandlers(node, prefix)
         if node.handler then
             local method = node.handler.method:lower()
@@ -458,7 +468,8 @@ function DawnServer:run()
                         local fake_req = {
                             method = "WS",
                             url = routePath,
-                            headers = {}
+                            headers = {"x-forwarded-for", get_ws_id(ws)},
+                            ws = ws
                         }
                         local fake_res = {}
                         fake_res.writeHeader = function() return fake_res end
