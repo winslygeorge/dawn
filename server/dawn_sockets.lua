@@ -21,8 +21,12 @@ local function get_ws_id(ws)
     end
 end
 
-function DawnSockets:new(parent_supervisor, shared_state, options)
+function DawnSockets:new(dawn_server,parent_supervisor, shared_state, options)
     local self = setmetatable({}, DawnSockets)
+    self.server = dawn_server
+    if not self.server then
+        error("DawnSockets requires a Dawn server instance.")
+    end
     self.supervisor = parent_supervisor
     self.shared = shared_state or {
         sessions = {},
@@ -32,6 +36,8 @@ function DawnSockets:new(parent_supervisor, shared_state, options)
         pending_acknowledgements = {} -- Store pending acknowledgements (ws_id -> message_id -> callback)
     }
     self.logger = self.supervisor.logger
+
+    self.logger:setComponentLevel("DawnSockets", log_level.INFO)
     self.handlers = options.handlers or {}
     self.connections = {}
 
@@ -53,6 +59,9 @@ function DawnSockets:new(parent_supervisor, shared_state, options)
     self.pubsub.unsubscribe = function(topic)
         self.state_management:unsubscribe(topic)
     end
+
+    self.logger:setComponentLevel("DawnSockets", log_level.INFO)
+
     return self
 end
 
@@ -113,18 +122,40 @@ local function shallow_copy(orig)
 end
 
 function DawnSockets:start_heartbeat(interval, timeout)
-    interval = interval or 15000
-    timeout = timeout or 30
-    local hb_timer = uv.new_timer()
-    uv.timer_start(hb_timer, 0, interval, function()
+
+    self.logger:log(log_level.INFO, "[HEARTBEAT] Starting heartbeat with interval:" .. interval .."and timeout:" .. timeout)
+
+    -- wrape the heartbeat logic with a setTimeout to wait for the server to be ready
+    if not self.server then
+        error("Server instance is not initialized.")
+        return
+    end
+    interval = interval or 60000 -- 60 seconds
+    timeout = timeout or 60000 -- 60 seconds
+    if not self.server or not self.server.setInterval or not self.server.clearTimer then
+        error("Server instance is not properly initialized.")
+        return
+    end
+    -- if self.heartbeat_timer_id then
+    --     self.server:clearTimer(self.heartbeat_timer_id)
+    -- end
+
+    self.heartbeat_timer_id = self.server:setInterval(function(ctx)
+        if not self.connections or next(self.connections) == nil then
+            self.logger:log(log_level.DEBUG, "[HEARTBEAT] No active connections to send heartbeats.", "DawnSockets")
+            return
+        end
         self:send_heartbeats()
         self:cleanup_stale_clients(timeout)
         self:auto_leave_idle_clients(300) -- 5 min idle leave
-    end)
-    print(string.format("[HEARTBEAT] Started: every %dms, timeout: %ds", interval, timeout))
+    end, interval)
+
+    self.logger:log(log_level.INFO, string.format("[HEARTBEAT] Started: every %dms, timeout: %ds", interval, timeout), "DawnSockets")
 end
 
+
 function DawnSockets:send_heartbeats()
+    print("[HEARTBEAT] Sending heartbeats to all connected clients")
     for ws_id, conn in pairs(self.connections) do
         if conn and conn.ws then
             conn.ws:send('{"type":"ping"}')
@@ -138,7 +169,7 @@ function DawnSockets:cleanup_stale_clients(timeout_seconds)
     for ws_id, conn in pairs(self.connections) do
         local last = conn.state.last_pong or conn.state.last_message or 0
         if now - last > timeout_seconds then
-            print("[HEARTBEAT] Stale connection closing:", tostring(conn.ws), "(ID:", ws_id, ")")
+            self.logger:log(log_level.DEBUG, "[HEARTBEAT] Stale connection closing:", tostring(conn.ws), "(ID:", ws_id, ")", "DawnSockets")
             table.insert(stale_ws_ids, ws_id)
             if conn.ws then
                 self:safe_close(ws_id)
@@ -530,19 +561,14 @@ end
 
 function DawnSockets:send_to_user(ws_unique_identifier, message_table, ack_callback)
     local encoded = cjson.encode(message_table)
-    print("Sending message to user:", ws_unique_identifier, "message:", encoded)
     local ws = self.connections[ws_unique_identifier] and self.connections[ws_unique_identifier].ws
-    print("WebSocket object:", tostring(ws))
     local receiver = message_table and message_table.receiver or nil
     local sender = message_table and message_table.sender or nil
     local message_id = message_table.id
-    print("Message ID:", message_id, "Receiver:", receiver, "Sender:", sender, ws_unique_identifier)
     if receiver and sender then
         local user_status = self.state_management:get_user_status(receiver) or nil
-        print("User status:", user_status, "Receiver:", receiver, "Sender:", sender)
         if user_status and user_status == "offline" then
             self.state_management:queue_private_message(receiver, message_table)
-            print(string.format("[WS] User %s is offline. Message (ID: %s) queued.", receiver, message_id))
             return false
         elseif user_status and user_status == "away" then
             local sender_ws_id = self:getSyncPrivateChatId(sender)
@@ -558,35 +584,36 @@ function DawnSockets:send_to_user(ws_unique_identifier, message_table, ack_callb
         end
     end
 
-    if ws and ws.send then
-        ws:send(encoded)
-        if ack_callback and message_id then
-            self.shared.pending_acknowledgements[ws_unique_identifier] =
-                self.shared.pending_acknowledgements[ws_unique_identifier] or {}
-            self.shared.pending_acknowledgements[ws_unique_identifier][message_id] = ack_callback
-            uv.timer_start(uv.new_timer(), 5000, 0, function()
-                if self.shared.pending_acknowledgements[ws_unique_identifier] and
-                    self.shared.pending_acknowledgements[ws_unique_identifier][message_id] then
-                    local callback =
-                        table.remove(self.shared.pending_acknowledgements[ws_unique_identifier], message_id)
-                    if callback then
-                        pcall(callback, { error = "acknowledgement_timeout" })
-                    end
-                    if next(self.shared.pending_acknowledgements[ws_unique_identifier]) == nil then
-                        self.shared.pending_acknowledgements[ws_unique_identifier] = nil
-                    end
+if ws and ws.send then
+    ws:send(encoded)
+    if ack_callback and message_id then
+        self.shared.pending_acknowledgements[ws_unique_identifier] =
+            self.shared.pending_acknowledgements[ws_unique_identifier] or {}
+        self.shared.pending_acknowledgements[ws_unique_identifier][message_id] = ack_callback
+
+        self.server:setTimeout(function(ctx)
+            -- Check if the acknowledgement was received
+            local pending = self.shared.pending_acknowledgements[ws_unique_identifier]
+            if pending and pending[message_id] then
+                local callback = table.remove(pending, message_id)
+                if callback then
+                    pcall(callback, { error = "acknowledgement_timeout" })
                 end
-            end)
-        end
-        return true
-    else
+                if next(pending) == nil then
+                    self.shared.pending_acknowledgements[ws_unique_identifier] = nil
+                end
+            end
+        end, 5000) -- timeout in ms
+    end
+    return true
+else
+
         if (receiver) then
-            print("Receiver user ID:", receiver, "Sender user ID:", sender)
             self.state_management:queue_private_message(receiver, message_table)
-            print(string.format("[WS]No Receiver User %s is offline. Message (ID: %s) queued.", receiver, message_id))
+            self.logger:log(log_level.INFO, string.format("[WS]No Receiver User %s is offline. Message (ID: %s) queued.", receiver, message_id), "DawnSockets")
             return false
         else
-           print("[WS] Invalid WebSocket object:", tostring(ws), "Message (ID: %s) not sent.", message_id)
+           self.logger:log(log_level.ERROR, "[WS] Invalid WebSocket object:" ..tostring(ws).. "Message (ID: %s) not sent." .. message_id, "DawnSockets")
         end
         return false
     end
@@ -598,7 +625,7 @@ function DawnSockets:send_binary_to_user(ws_unique_identifier, binary_data)
         ws:send(binary_data, "binary")
         return true
     else
-        print("[WS] Invalid WebSocket object:", tostring(ws), "Binary message not sent.")
+        self.server:log(log_level.ERROR, "[WS] Invalid WebSocket object:" ..tostring(ws).. "Binary message not sent.", "DawnSockets")
         return false
     end
 end
@@ -628,7 +655,7 @@ function DawnSockets:handle_close(ws, code, reason)
           self.shared.pending_acknowledgements[ws_id] = nil
         end
         self.supervisor:stopChild({ name = ws_id })
-        print("[User socket closed] ", "ws:", tostring(ws), "code:", code, "reason:", reason)
+        self.logger:log(log_level.DEBUG, "[User socket closed]  ws: ".. tostring(ws).. " code:" .. code .. " reason:" .. reason, "DawnSockets")
     end
 end
 

@@ -4,6 +4,17 @@ local rate_limit_store = {}
 return function ()
     return function (req, res, next)
         -- Attempt to get IP from X-Forwarded-For header first (most common for proxies)
+
+        if req.method == "GET" then
+            local url = (req and req._raw and req._raw:getUrl()) or (req.url and req.url or "") or nil
+            if url and  url:find("/sse/") then
+                -- If the request is for Server-Sent Events (SSE), we can skip rate limiting
+                print("Skipping rate limiting for SSE request.")
+                next()
+                return
+            end
+        end
+
         local ip = nil
         -- Check if the request method is OPTIONS (CORS preflight)
         -- If so, we can skip rate limiting for these requests.

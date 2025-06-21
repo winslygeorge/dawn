@@ -8,6 +8,7 @@ local uv = require("luv")
 local URLParamExtractor = require("utils.query_extractor")
 local log_level = require('utils.logger').LogLevel
 local TokenCleaner = require("auth.token_cleaner")
+local Logger = require("utils.logger").Logger
 
 local extractor = URLParamExtractor:new()
 
@@ -121,11 +122,12 @@ DawnServer.__index = DawnServer
 function DawnServer:new(config)
     local self = setmetatable({}, DawnServer)
     self.config = config or {}
-    self.logger = config.logger
+    self.logger = Logger:new(self)
+    self.logger:setComponentLevel("DawnServer", config.level)
     self.router = TrieNode:new(self.logger)
     self.middlewares = {}
     self.error_handlers = { middleware = nil, route = {} }
-    self.supervisor = Supervisor:new("WebServerSupervisor", "one_for_one", self.logger)
+    self.supervisor = Supervisor:new(self, "WebServerSupervisor", "one_for_one", self.logger)
     self.port = config.port or 3000
     self.running = false
     self.multipart_parser_options = config.multipart_parser_options or nil
@@ -141,17 +143,17 @@ function DawnServer:new(config)
         metrics = {},
     }
     -- New member to store static file configurations
-    self.static_configs = config.static_configs or {} -- <--- Add this line
+    self.static_configs = config.static_configs or {}
 
     local DawnSockets = require("dawn_sockets")
-    self.dawn_sockets_handler = DawnSockets:new(self.supervisor, self.shared_state, self.config.state_management_options or {})
+    self.dawn_sockets_handler = DawnSockets:new(self, self.supervisor, self.shared_state, self.config.state_management_options or {})
+    self.dawn_sockets_handler:start_heartbeat(10000, 10000) -- Start heartbeat with 10 seconds interval
     if self.token_store.store then
         self.logger:log(log_level.INFO, "SETTING UP LOGGER", 'dawn_server', 345)
 
-        local cleaner = TokenCleaner:new("TokenCleaner", self.token_store.cleanup_interval, self.supervisor.scheduler)
+        local cleaner = TokenCleaner:new("TokenCleaner", self.token_store.cleanup_interval, self)
         self.supervisor:startChild(cleaner)
     end
-
     return self
 end
 
@@ -209,7 +211,7 @@ function DawnServer:ws(route, handler)
 end
 
 -- New function to add static file serving configuration
-function DawnServer:serveStatic(route_prefix, directory_path) -- <--- Add this function
+function DawnServer:serveStatic(route_prefix, directory_path)
     assert(type(route_prefix) == "string", "Route prefix for static serving must be a string.")
     assert(type(directory_path) == "string", "Directory path for static serving must be a string.")
     table.insert(self.static_configs, {
@@ -218,6 +220,30 @@ function DawnServer:serveStatic(route_prefix, directory_path) -- <--- Add this f
     })
 end
 
+-- new function to expose uws.setTimout functions 
+function DawnServer:setTimeout(callback, delay, ...)
+    return uws.setTimeout(callback, delay, ...)
+end
+
+-- new function to expose uws.setInterval functions
+function DawnServer:setInterval(callback, interval, ...)
+    return uws.setInterval(callback, interval, ...)
+end
+
+-- new function to expose uws.clearTimer functions
+function DawnServer:clearTimer(timer_id)
+    return uws.clearTimer(timer_id)
+end
+
+-- New function to send SSE data
+function DawnServer:sse_send(sse_id, data)
+    return uws.sse_send(sse_id, data)
+end
+
+-- New function to close SSE connection
+function DawnServer:sse_close(sse_id)
+    return uws.sse_close(sse_id)
+end
 
 local function parseQuery(url)
     return extractor:extract_from_url_like_string(url)
@@ -266,19 +292,6 @@ local function handleCORS(req, res)
         return false
     end
     return true
-end
-
-local function setupGracefulShutdown(self)
-    local sigint = uv.new_signal()
-    uv.signal_start(sigint, "sigint", function()
-        self:stop()
-        os.exit(0)
-    end)
-    local sigterm = uv.new_signal()
-    uv.signal_start(sigterm, "sigterm", function()
-        self:stop()
-        os.exit(0)
-    end)
 end
 
 local function executeMiddleware(self, req, res, route, middlewares, index)
@@ -358,8 +371,9 @@ function DawnServer:run()
             if executeMiddleware(self_ref, req, res, path, self_ref.middlewares, 1) then
                 method = string.upper(method)
                 if method == "WS" then
-                    res:writeStatus(404):send("Not Found")
+                    res:writeStatus(404):send("Not Found") -- WS handled by specific uws.ws callback
                 elseif method == "GET" or method == "DELETE" or method == "HEAD" or method == "OPTIONS" then
+                    -- SSE GET requests are handled by uws.sse directly, not through handleRequest body parsing
                     local ok, err = pcall(function()
                         handler(req, res, query_params)
                     end)
@@ -491,7 +505,44 @@ end
                     end
                 end)
             elseif method == "get" or method == "delete" or method == "head" or method == "options" then
-                uws[method](routePath, handleRequest)
+
+               -- check if routePath contains '/sse/' to handle SSE
+                if routePath:find("/sse/") then
+                    uws.sse(routePath, function(req, sse_id)
+                        local fake_req = {
+                            method = "GET",
+                            url = routePath,
+                            headers = req.headers,
+                            sse_id = sse_id
+                        }
+                        local fake_res = {}
+                        fake_res.writeHeader = function() return fake_res end
+                        fake_res.writeStatus = function() return fake_res end
+                        fake_res.send = function(data)
+                            uws.sse_send(sse_id, data)
+                        end
+                        local ok = executeMiddleware(self_ref, fake_req, fake_res, routePath, self_ref.middlewares, 1)
+                        if ok then
+                            local handler_info, params = self_ref.router:search(method, routePath)
+                            pcall(function()
+                                if handler_info then
+                                    local handler = handler_info
+                                    local query_params = parseQuery(req.url)
+                                    handler(fake_req, fake_res, query_params)
+                                else
+                                    -- If no specific SSE handler is found, send a default message
+                                    uws.sse_send(sse_id, "Default SSE message", "default")
+                                    self:sse_close(sse_id)
+                                    print("[SSE] No handler found for SSE route:", routePath)
+                                end
+                            end)
+                        else
+                            print("[SSE] Connection rejected by middleware:", routePath)
+                        end
+                    end)
+                else
+                    uws[method](routePath, handleRequest)
+                end
             elseif method == "post" or method == "put" or method == "patch" then
                 uws[method](routePath, handleRequest)
             end
@@ -511,7 +562,7 @@ end
     -- Register static file serving using the new uws.serve_static function
     for _, config in ipairs(self_ref.static_configs) do
         self_ref.logger:log(log_level.INFO, string.format("Serving static files from '%s' at route '%s'", config.directory_path, config.route_prefix), "DawnServer")
-        uws.serve_static(config.route_prefix, config.directory_path) -- <--- Call the new C++ function here
+        uws.serve_static(config.route_prefix, config.directory_path)
     end
 
     self:printRoutes()
@@ -529,6 +580,8 @@ function DawnServer:stop()
     if self.running then
         self.running = false
         uv.stop()
+        uws.cleanup_app()
+        self.logger:log(log_level.INFO, "Dawn Server stopped", "DawnServer")
     end
 end
 
@@ -546,7 +599,7 @@ function DawnServer:start()
         end,
         stop = function()
             self.logger:log(log_level.INFO, "Dawn Server connection stopped", "DawnServer")
-            setupGracefulShutdown(self)
+            self:stop() -- Ensure this is called to stop the C++ server and cleanup
             self.logger:Shutdown()
             return true
         end,

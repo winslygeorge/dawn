@@ -1,15 +1,6 @@
-package.path = package.path .. ";../?.lua;../utils/?.lua"
 
-local ffi = require("ffi")
-local luv = require("luv")
 local Scheduler = require("runtime.scheduler")
 local log_level = require('utils.logger').LogLevel
-
-ffi.cdef[[
-typedef struct { /* opaque */ } uv_loop_t;
-typedef struct { /* opaque */ } uv_timer_t;
-typedef struct { /* opaque */ } uv_async_t;
-]]
 
 -- Constants
 local MAX_RESTARTS = 1000  -- Increased to handle more failures before giving up
@@ -23,8 +14,11 @@ local BATCH_RESTART_LIMIT = 1000  -- Increased to allow more parallel restarts f
 local Supervisor = {}
 Supervisor.__index = Supervisor
 
-function Supervisor:new(name, strategy, logger)
+function Supervisor:new(dawn_server, name, strategy, logger)
+    assert(dawn_server, "Dawn server instance is required")
+    assert(logger, "Logger instance is required")
     local self = setmetatable({}, Supervisor)
+    self.dawn_server = dawn_server
     self.name = name or "DefaultSupervisor"
     self.strategy = strategy or "one_for_one"
     self.children = {}
@@ -49,14 +43,6 @@ function Supervisor:safeCall(func, ...)
     return xpcall(func, errorHandler, ...)
 end
 
--- function Supervisor:safeCall(fn)
---     local ok, result = pcall(fn)
---     if not ok then
---         self.logger:log("ERROR", "safeCall failed: " .. tostring(result), "Supervisor")
---         return false, result
---     end
---     return true, result
--- end
 
 
 function Supervisor:addChild(child)
@@ -67,30 +53,52 @@ function Supervisor:addChild(child)
 end
 
 
+-- function Supervisor:logFailure(child)
+--     print("logFailure called for:", child.name) -- Add this line
+--     local now = os.time() * 1000
+--     self.failedProcesses[child.name] = self.failedProcesses[child.name] or {}
+    
+--     table.insert(self.failedProcesses[child.name], now)
+
+--     -- Expire old failures
+--     for i = #self.failedProcesses[child.name], 1, -1 do
+--         if now - self.failedProcesses[child.name][i] > FAILURE_EXPIRATION_TIME then
+--             table.remove(self.failedProcesses[child.name], i)
+--         end
+--     end
+
+--     -- Circuit breaker activation
+--     if #self.failedProcesses[child.name] >= CIRCUIT_BREAKER_THRESHOLD then
+--         self.circuitBreaker[child.name] = true
+--         self.logger:log(log_level.WARN, "Circuit breaker activated for " .. child.name, "Supervisor")
+        
+--         local timer = luv.new_timer()
+--         luv.timer_start(timer, CIRCUIT_BREAKER_TIMEOUT, 0, function()
+--             self.circuitBreaker[child.name] = false
+--             self.logger:log(log_level.INFO, "Circuit breaker reset for " .. child.name, "Supervisor")
+--         end)
+--     end
+-- end
+
 function Supervisor:logFailure(child)
-    print("logFailure called for:", child.name) -- Add this line
     local now = os.time() * 1000
     self.failedProcesses[child.name] = self.failedProcesses[child.name] or {}
-    
     table.insert(self.failedProcesses[child.name], now)
 
-    -- Expire old failures
     for i = #self.failedProcesses[child.name], 1, -1 do
         if now - self.failedProcesses[child.name][i] > FAILURE_EXPIRATION_TIME then
             table.remove(self.failedProcesses[child.name], i)
         end
     end
 
-    -- Circuit breaker activation
     if #self.failedProcesses[child.name] >= CIRCUIT_BREAKER_THRESHOLD then
         self.circuitBreaker[child.name] = true
         self.logger:log(log_level.WARN, "Circuit breaker activated for " .. child.name, "Supervisor")
-        
-        local timer = luv.new_timer()
-        luv.timer_start(timer, CIRCUIT_BREAKER_TIMEOUT, 0, function()
+
+        self.dawn_server:setTimeout(function(ctx)
             self.circuitBreaker[child.name] = false
             self.logger:log(log_level.INFO, "Circuit breaker reset for " .. child.name, "Supervisor")
-        end)
+        end, CIRCUIT_BREAKER_TIMEOUT)
     end
 end
 
@@ -133,23 +141,6 @@ function Supervisor:startChild(child)
     end
 end
 
-
--- function Supervisor:scheduleRestart(child)
---     if self.circuitBreaker[child.name] or self.pendingRestarts[child.name] then return end
---     self.logger:log("DEBUG", "Scheduling restart for " .. child.name, "Supervisor")
---     self.pendingRestarts[child.name] = true
-
---     print("self.failedProcesses[child.name]:", self.failedProcesses[child.name]) -- Add this line
-
---     self.scheduler:add_task(
---         "restart_" .. child.name,
---         function() self:restartChildBatch() end,
---         child.backoff,
---         math.max(1, 5 - #self.failedProcesses[child.name]),
---         3,
---         5
---     )
--- end
 
 function Supervisor:scheduleRestart(child)
     if self.circuitBreaker[child.name] or self.pendingRestarts[child.name] then return end
@@ -219,16 +210,6 @@ function Supervisor:restartChild(child)
     end
 end
 
-function Supervisor:sleep(ms, callback)
-    local timer = luv.new_timer()
-    luv.timer_start(timer, ms, 0, function()
-        luv.timer_stop(timer)
-        luv.close(timer)
-        if callback then
-            self:safeCall(callback)
-        end
-    end)
-end
 
 function Supervisor:stopChild(child)
     child = self.children[child.name]
