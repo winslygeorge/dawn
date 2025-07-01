@@ -147,7 +147,7 @@ function DawnServer:new(config)
 
     local DawnSockets = require("dawn_sockets")
     self.dawn_sockets_handler = DawnSockets:new(self, self.supervisor, self.shared_state, self.config.state_management_options or {})
-    self.dawn_sockets_handler:start_heartbeat(10000, 10000) -- Start heartbeat with 10 seconds interval
+    self.dawn_sockets_handler:start_heartbeat(500000, 200000) -- Start heartbeat with 10 seconds interval
     if self.token_store.store then
         self.logger:log(log_level.INFO, "SETTING UP LOGGER", 'dawn_server', 345)
 
