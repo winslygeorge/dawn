@@ -16,7 +16,6 @@ local function get_ws_id(ws)
         local get_id_func = getmetatable(ws).get_id
         return get_id_func(ws)
     else
-        print("Error: WebSocket object is nil or does not have get_id method.")
         return nil
     end
 end
@@ -70,7 +69,6 @@ function DawnSockets:safe_get_ws_id(ws)
 end
 
 function DawnSockets:syncPrivateChat(user_id, ws)
-    print("Setting sync private chat")
     local ws_id = get_ws_id(ws)
     if not ws_id then
         error("Error: Unable to get WebSocket ID.")
@@ -121,25 +119,52 @@ local function shallow_copy(orig)
     return copy
 end
 
+function DawnSockets:setReactiveRenderEngine(reactive_render_engine)
+    self.reactive_render_engine = reactive_render_engine
+    if self.state_management and self.state_management.redis then
+           -- Notify the 'join' event handler
+    local handler =
+        self.handlers.channels and (self.handlers.channels["patch"] or self.handlers.channels["__default__"])
+    if handler and type(handler["start_broadcast_loop"]) == "function" then
+        -- Call the start_broadcast_loop function with the necessary parameters
+        pcall(handler["start_broadcast_loop"], self, nil, nil, nil, self.shared, "patch", self.state_management)
+    end
+end
+end
+
+
+function DawnSockets:patchUnsuscribe(ws, ws_id)
+    if self.state_management and self.state_management.redis then
+           -- Notify the 'join' event handler
+    local handler =
+        self.handlers.channels and (self.handlers.channels["patch"] or self.handlers.channels["__default__"])
+    if handler and type(handler["unsubscribe"]) == "function" then
+        -- Call to unsubscribe from patch updates
+        self.shared.WebSocket_tocleanup = ws_id
+        pcall(handler["unsubscribe"], self, ws, nil, nil, self.shared, "patch", self.state_management)
+    end
+end
+end
+
 function DawnSockets:start_heartbeat(interval, timeout)
 
-    self.logger:log(log_level.INFO, "[HEARTBEAT] Starting heartbeat with interval:" .. interval .."and timeout:" .. timeout)
+    self.logger:log(log_level.DEBUG, "[HEARTBEAT] Starting heartbeat with interval:" .. interval .."and timeout:" .. timeout)
 
     -- wrape the heartbeat logic with a setTimeout to wait for the server to be ready
     if not self.server then
         error("Server instance is not initialized.")
         return
     end
-    interval = interval or 60000 -- 60 seconds
-    timeout = timeout or 60000 -- 60 seconds
+    interval = interval or 600 -- 60 seconds
+    timeout = timeout or 600 -- 60 seconds
     if not self.server or not self.server.setInterval or not self.server.clearTimer then
         error("Server instance is not properly initialized.")
         return
     end
     -- if self.heartbeat_timer_id then
-    --     self.server:clearTimer(self.heartbeat_timer_id)
+    --     self.server.clearTimer(self.heartbeat_timer_id)
     -- end
-
+self:send_heartbeats()
     self.heartbeat_timer_id = self.server:setInterval(function(ctx)
         if not self.connections or next(self.connections) == nil then
             self.logger:log(log_level.DEBUG, "[HEARTBEAT] No active connections to send heartbeats.", "DawnSockets")
@@ -150,12 +175,24 @@ function DawnSockets:start_heartbeat(interval, timeout)
         self:auto_leave_idle_clients(300) -- 5 min idle leave
     end, interval)
 
-    self.logger:log(log_level.INFO, string.format("[HEARTBEAT] Started: every %dms, timeout: %ds", interval, timeout), "DawnSockets")
+    self.logger:log(log_level.DEBUG, string.format("[HEARTBEAT] Started: every %dms, timeout: %ds", interval, timeout), "DawnSockets")
 end
 
+-- create function to stop heartbeat
+function DawnSockets:stop_heartbeat()
+    print("[HEARTBEAT] Stopping heartbeat: ", self.heartbeat_timer_id)
+    local timerID = self.heartbeat_timer_id
+    if timerID then
+        print("[HEARTBEAT] Stopping heartbeat timer: ", timerID)
+        -- self.server.clearTimer(2)
+        self.heartbeat_timer_id = nil
+        self.logger:log(log_level.INFO, "[HEARTBEAT] Stopped heartbeat", "DawnSockets")
+    end
+end
 
 function DawnSockets:send_heartbeats()
-    print("[HEARTBEAT] Sending heartbeats to all connected clients")
+    -- log debug message
+    self.logger:log(log_level.DEBUG, "[HEARTBEAT] Sending heartbeats to all connected clients", "DawnSockets")
     for ws_id, conn in pairs(self.connections) do
         if conn and conn.ws then
             conn.ws:send('{"type":"ping"}')
@@ -172,6 +209,7 @@ function DawnSockets:cleanup_stale_clients(timeout_seconds)
             self.logger:log(log_level.DEBUG, "[HEARTBEAT] Stale connection closing:", tostring(conn.ws), "(ID:", ws_id, ")", "DawnSockets")
             table.insert(stale_ws_ids, ws_id)
             if conn.ws then
+                self:patchUnsuscribe(conn.ws, ws_id)
                 self:safe_close(ws_id)
             end
         end
@@ -190,7 +228,7 @@ function DawnSockets:auto_leave_idle_clients(room_timeout_seconds)
                 local presence_data = self.state_management:get_all_presence(topic)[ws_id]
                 if presence_data and presence_data.joined_at and now - presence_data.joined_at > room_timeout_seconds then
                     self:leave_room(topic, conn.ws)
-                    print("[AUTO-LEAVE] Removing idle", ws_id, "from", topic)
+                    self.logger:log(log_level.DEBUG, "[AUTO-LEAVE] Removing idle " .. ws_id .. " from " .. topic, "DawnSockets")
                 end
             end
         end
@@ -230,6 +268,16 @@ function DawnSockets:broadcast_to_room(topic, message_table)
             self:send_to_user(existing_user_id, message_table)
         end
     end
+end 
+
+-- add a broadcast to all without checking rooms
+
+function DawnSockets:broadcast_to_all(message_table)
+    for ws_id, conn in pairs(self.connections) do
+        if conn and conn.ws then
+            self:send_to_user(ws_id, message_table)
+        end
+    end
 end
 
 function DawnSockets:broadcast_presence_diff(topic, diff)
@@ -254,7 +302,7 @@ function DawnSockets:join_room(topic, ws, payload)
         -- Room does not exist, create it
         local success, err = self.state_management:create_room(topic)
         if not success then
-            self.logger:log(log_level.ERROR, string.format("[ROOM] Error creating room %s: %s", topic, err), "DawnSockets")
+            self.logger:log(log_level.WARN, string.format("[ROOM] Error creating room %s: %s", topic, err), "DawnSockets")
             return
         end
         if self.connections[ws_id] then
@@ -263,7 +311,7 @@ function DawnSockets:join_room(topic, ws, payload)
                 table.insert(self.connections[ws_id].state.rooms, topic)
             end
         end
-        self.logger:log(log_level.INFO, string.format("[ROOM] Room %s created successfully.", topic), "DawnSockets")
+        self.logger:log(log_level.DEBUG, string.format("[ROOM] Room %s created successfully.", topic), "DawnSockets")
         self:send_to_user(ws_id, {
             type = "dawn_error",
             topic = topic,
@@ -367,21 +415,31 @@ function DawnSockets:safe_close(ws_id)
                 pcall(handler["before_close"], self, conn.ws, conn.state, self.shared, topic, self.state_management)
             end
         end
+        self:patchUnsuscribe(conn.ws, ws_id)
+
         if conn.ws and conn.ws.close then
             self.shared.metrics.total_connections = (self.shared.metrics.total_connections or 0) - 1
             conn.ws:close()
-            print("[WS] Closing connection:", ws_id, "ws:", tostring(conn.ws))
+        self.logger:log(log_level.DEBUG, "[WS] Closing connection:" ..  ws_id .. "ws:" .. tostring(conn.ws), "DawnSockets")
+        else
+            self.logger:log(log_level.WARN, "[WS] Unable to close connection:" .. ws_id .. "ws:" .. tostring(conn.ws), "DawnSockets")
         end
 
         self.connections[ws_id] = nil
     end
+
+    local conn_ws = nil
+    if conn and conn.ws then
+        conn_ws = conn.ws
+    end
+    self:patchUnsuscribe(conn_ws, ws_id)
 end
 
 -- This function is used to handle the opening of a WebSocket connection.
 function DawnSockets:handle_open(ws)
     local ws_id = get_ws_id(ws)
     if not ws_id then
-        print("Error: Unable to get WebSocket ID.")
+        self.logger:log(log_level.DEBUG, "Error: Unable to get WebSocket ID : -" .. ws_id, "DawnSockets")
         return
     end
 
@@ -392,7 +450,7 @@ function DawnSockets:handle_open(ws)
     end
 
     if not ws or not ws.send then
-        print("[WS] Invalid WebSocket object:", tostring(ws))
+        self.logger:log(log_level.DEBUG, "[WS] Invalid WebSocket object:" .. tostring(ws), "DawnSockets")
         return
     end
 
@@ -422,16 +480,16 @@ function DawnSockets:setupWsChildProcess(ws_id, ws)
             return true
         end,
         stop = function()
-            print("[WS STOP]", ws_id, "ws:", tostring(ws))
+            self.logger:log(log_level.DEBUG, "[WS STOP]" ..ws_id .. "ws:" .. tostring(ws), "DawnSockets")
             if (ws and ws.close) then
                 self:safe_close(ws_id)
-                print("[User socket closed] ", "ws:", tostring(ws))
+                self.logger:log(log_level.DEBUG, "[User socket closed] " .. "ws:" .. tostring(ws), "DawnSockets")
             end
             self.connections[ws_id] = nil
             return true
         end,
         restart = function()
-            print("[WS RESTART]", ws_id, "ws:", tostring(ws))
+            self.logger:log(log_level.DEBUG, "[WS RESTART]" .. ws_id .. "ws:" .. tostring(ws), "DawnSockets")
             return true
         end,
     }
@@ -464,10 +522,10 @@ function DawnSockets:handle_message(ws, message, opcode)
             if handler_group and type(handler_group["message"]) == "function" then
                 local success, err = pcall(handler_group["message"], self, ws, message, conn.state, self.shared)
                 if not success then
-                    print("[BINARY ERROR]", err)
+                    self.logger:log(log_level.DEBUG, "[BINARY ERROR]" .. err, "DawnSockets")
                 end
             else
-                print("[BINARY] No handler for binary message")
+                self.logger:log(log_level.DEBUG, "[BINARY] No handler for binary message", "DawnSockets")
             end
             return
         else -- Assume text message (JSON)
@@ -545,7 +603,7 @@ function DawnSockets:handle_message(ws, message, opcode)
                         event = event,
                         payload = { reason = err },
                     }))
-                    print("[WS ERROR]", err)
+                    self.logger:log(log_level.DEBUG, "[WS ERROR]" .. err, "DawnSockets")
                 end
             else
                 ws:send(cjson.encode({
@@ -559,8 +617,29 @@ function DawnSockets:handle_message(ws, message, opcode)
     end
 end
 
+local function safeEncode(value)
+    local function sanitize(v, seen)
+        if type(v) == "table" then
+            if seen[v] then return "<cycle>" end
+            seen[v] = true
+            local copy = {}
+            for k, vv in pairs(v) do
+                if type(vv) ~= "function" and type(vv) ~= "userdata" and type(vv) ~= "thread" then
+                    copy[k] = sanitize(vv, seen)
+                else
+                    copy[k] = "<"..type(vv)..">"
+                end
+            end
+            return copy
+        else
+            return v
+        end
+    end
+    return require("dkjson").encode(sanitize(value, {}))
+end
+
 function DawnSockets:send_to_user(ws_unique_identifier, message_table, ack_callback)
-    local encoded = cjson.encode(message_table)
+    local encoded = safeEncode(message_table)
     local ws = self.connections[ws_unique_identifier] and self.connections[ws_unique_identifier].ws
     local receiver = message_table and message_table.receiver or nil
     local sender = message_table and message_table.sender or nil
@@ -610,10 +689,11 @@ else
 
         if (receiver) then
             self.state_management:queue_private_message(receiver, message_table)
-            self.logger:log(log_level.INFO, string.format("[WS]No Receiver User %s is offline. Message (ID: %s) queued.", receiver, message_id), "DawnSockets")
+            self.logger:log(log_level.DEBUG, string.format("[WS]No Receiver User %s is offline. Message (ID: %s) queued.", receiver, message_id), "DawnSockets")
             return false
         else
-           self.logger:log(log_level.ERROR, "[WS] Invalid WebSocket object:" ..tostring(ws).. "Message (ID: %s) not sent." .. message_id, "DawnSockets")
+           self.logger:log(log_level.DEBUG, "[WS] Invalid WebSocket object:" ..tostring(ws).. "Message (ID: %s) not sent." .. message_id, "DawnSockets")
+           self:safe_close(ws_unique_identifier)
         end
         return false
     end
@@ -625,7 +705,7 @@ function DawnSockets:send_binary_to_user(ws_unique_identifier, binary_data)
         ws:send(binary_data, "binary")
         return true
     else
-        self.server:log(log_level.ERROR, "[WS] Invalid WebSocket object:" ..tostring(ws).. "Binary message not sent.", "DawnSockets")
+        self.server:log(log_level.DEBUG, "[WS] Invalid WebSocket object:" ..tostring(ws).. "Binary message not sent.", "DawnSockets")
         return false
     end
 end
@@ -646,6 +726,8 @@ end
 
 function DawnSockets:handle_close(ws, code, reason)
     local ws_id = get_ws_id(ws)
+    self:patchUnsuscribe(ws, ws_id)
+    
     if ws_id then
         local user_id = self:getSyncPrivateUserID(ws_id) or nil
         if user_id then
@@ -655,7 +737,7 @@ function DawnSockets:handle_close(ws, code, reason)
           self.shared.pending_acknowledgements[ws_id] = nil
         end
         self.supervisor:stopChild({ name = ws_id })
-        self.logger:log(log_level.DEBUG, "[User socket closed]  ws: ".. tostring(ws).. " code:" .. code .. " reason:" .. reason, "DawnSockets")
+        self.logger:log(log_level.DEBUG, "[User socket closed]  ws: ".. tostring(ws).. " code:" .. code, "DawnSockets")
     end
 end
 
@@ -668,10 +750,10 @@ end
 function DawnSockets:create_room(room_id, options)
     local success, err = self.state_management:create_room(room_id, options)
     if success then
-        self.logger:log(log_level.INFO, string.format("[ROOM] Created room: %s", room_id), "DawnSockets")
+        self.logger:log(log_level.DEBUG, string.format("[ROOM] Created room: %s", room_id), "DawnSockets")
         return true
     else
-        self.logger:log(log_level.ERROR, string.format("[ROOM] Error creating room %s: %s", room_id, err), "DawnSockets")
+        self.logger:log(log_level.DEBUG, string.format("[ROOM] Error creating room %s: %s", room_id, err), "DawnSockets")
         return false
     end
 end

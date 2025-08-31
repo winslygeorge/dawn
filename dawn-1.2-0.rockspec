@@ -1,5 +1,5 @@
 package = "dawn"
-version = "1.0-15"
+version = "1.2-0"
 
 source = {
    url = "https://github.com/winslygeorge/dawn/archive/master.zip",
@@ -36,6 +36,11 @@ build = {
          ["layout.renderer.lustache_renderer"]        = "build/dawn/layout/renderer/lustache_renderer.lua",
          ["layout.renderer.Controller"]               = "build/dawn/layout/renderer/Controller.lua",
          ["layout.renderer.FuncComponent"]            = "build/dawn/layout/renderer/FuncComponent.lua",
+         ["layout.renderer.MustacheHTMLBuilder"]      = "build/dawn/layout/renderer/MustacheHTMLBuilder.lua",
+         ["layout.renderer.HTML_Enums"]               = "build/dawn/layout/renderer/HTML_Enums.lua",
+         ["layout.renderer.Reverse_HTML_LuaTable"]    = "build/dawn/layout/renderer/Reverse_HTML_LuaTable.lua",
+         ["layout.renderer.LuaHTMLReactive"]          = "build/dawn/layout/renderer/LuaHTMLReactive.lua",
+
          ["dawn"]                                     = "build/dawn/dawn.lua",
          ["auth.refresh_handler"]                     = "build/dawn/server/auth/refresh_handler.lua",
          ["auth.purejwt"]                             = "build/dawn/server/auth/purejwt.lua",
@@ -60,9 +65,15 @@ build = {
          ["utils.promise"]                            = "build/dawn/utils/promise.lua",
          ["utils.set"]                                = "build/dawn/utils/set.lua",
          ["utils.logger"]                             = "build/dawn/utils/logger.lua",
+         ["utils.patch_queue"]                        = "build/dawn/utils/patch_queue.lua",
+         ["utils.server_patch_queue"]                 = "build/dawn/utils/server_patch_queue.lua",
+         ["utils.patchStreamer"]                      = "build/dawn/utils/patchStreamer.lua",
+         ["utils.query_filter_parser"]                = "build/dawn/utils/query_filter_parser.lua",
+         ["utils.component_patcher"]                  = "build/dawn/utils/component_patcher.lua",
          ["runtime.scheduler"]                        = "build/dawn/runtime/scheduler.lua",
          ["runtime.loop"]                             = "build/dawn/runtime/loop.lua",
-         ["utils.uuid"]                               = "build/dawn/utils/uuid.lua"
+         ["utils.uuid"]                               = "build/dawn/utils/uuid.lua",
+         ["utils.DawnWatcher"]                        = "build/dawn/utils/DawnWatcher.lua"
       }
    }
 }

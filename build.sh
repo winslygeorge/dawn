@@ -4,7 +4,7 @@ set -e
 
 # === CONFIGURATION ===
 PACKAGE="dawn"
-VERSION="1.0-15"
+VERSION="1.2-0"
 ROCKSPEC_NAME="$PACKAGE-$VERSION.rockspec"
 C_SRC="server/check_version.cpp"
 
@@ -23,14 +23,25 @@ echo "[1/6] Cleaning build directory..."
 rm -rf "$BUILD_DIR"
 mkdir -p "$MODULE_ROOT"
 
-# === 2. Compile .lua to .luac ===
-echo "[2/6] Compiling .lua files to .luac..."
+# # === 2. Compile .lua to .luac ===
+# echo "[2/6] Compiling .lua files to .luac..."
+# find "$SRC_DIR" -name "*.lua" | while read lua_file; do
+#   rel_path="${lua_file#$SRC_DIR/}"
+#   out_file="$MODULE_ROOT/${rel_path%.lua}.lua"
+#   mkdir -p "$(dirname "$out_file")"
+#   luajit -b "$lua_file" "$out_file"
+# done
+
+
+# === 2. Copy .lua files without compilation ===
+echo "[2/6] Copying .lua files..."
 find "$SRC_DIR" -name "*.lua" | while read lua_file; do
   rel_path="${lua_file#$SRC_DIR/}"
-  out_file="$MODULE_ROOT/${rel_path%.lua}.lua"
+  out_file="$MODULE_ROOT/$rel_path"
   mkdir -p "$(dirname "$out_file")"
-  luajit -b "$lua_file" "$out_file"
+  cp "$lua_file" "$out_file"
 done
+
 
 
 # # === 4. Generate .rockspec ===

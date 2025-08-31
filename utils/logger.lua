@@ -111,6 +111,7 @@ function Logger:log(level, msg, source, request_id)
         return
     end
     if level < min_level then return end
+
     local level_name = LogLevel.toString(level)
     source = source or "unknown"
     local entry = {
@@ -123,17 +124,45 @@ function Logger:log(level, msg, source, request_id)
         request_id = request_id or "N/A",
         memory_usage = collectgarbage("count")
     }
+
     local json_log = cjson.encode(entry)
     if not json_log then
         print("[Logger] Failed to encode log entry.")
         return
     end
     table.insert(self.log_queue, json_log .. "\n")
-    if self.log_mode == "dev" then
-        local color = COLORS[level_name] or ""
-        local icon = ICONS[level_name] or ""
-        print(string.format("%s[%s] [%s] %s %s%s", color, entry.timestamp, level_name, icon, msg, COLORS.RESET))
-    end
+
+    -- Beautified dev mode logs
+if self.log_mode == "dev" then
+    local color = COLORS[level_name] or ""
+    local icon  = ICONS[level_name] or ""
+    local reset = COLORS.RESET
+    local bold  = "\27[1m"
+    local dim   = "\27[2m"
+
+    local pid_str    = tostring(entry.pid or "?")
+    local tid_str    = tostring(entry.thread_id or "?")
+    local source_str = tostring(source or "unknown")
+    local level_str  = tostring(level_name or "UNKNOWN")
+    local ts_str     = tostring(entry.timestamp or "")
+    local msg_str    = tostring(msg or "")
+
+    local formatted = string.format(
+        "%s╭──────────────────────────────────────────────────────────╮%s\n" ..
+        "%s│ %s%-7s%s │ %s%-19s%s │ PID:%-5s TID:%-9s │ %-15s │%s\n" ..
+        "%s╰→ %s%s%s%s\n",
+        dim, reset,
+        color, bold, level_str, reset,
+        reset, ts_str, color,
+        pid_str, tid_str, source_str, reset,
+        reset, color, icon, " " .. msg_str, reset
+    )
+
+    print(formatted)
+end
+
+
+
     if #self.log_queue >= MAX_QUEUE_SIZE or #self.log_queue >= 10 then
         self:flushBuffer()
     end
@@ -162,7 +191,7 @@ end
 
 function Logger:startAutoFlush()
     if self.flush_timer_id then
-        -- self.dawn:clearTimer(self.flush_timer_id)
+        self.dawn:clearTimer(self.flush_timer_id)
     end
     self.flush_timer_id = self.dawn:setInterval(function(ctx)
         self:flushBuffer()
@@ -170,7 +199,6 @@ function Logger:startAutoFlush()
 end
 
 function Logger:addSubscriber(id, opts)
-    print("[Logger] Adding subscriber:", id)
     self.subscribers[id] = opts or {}
     for _, line in ipairs(self.history) do
         if self:shouldSend(line, self.subscribers[id]) then
@@ -208,7 +236,6 @@ function Logger:shutdown()
     self.shutdown_signal = true
     self:flushBuffer()
     if self.flush_timer_id then
-        -- self.dawn:clearTimer(self.flush_timer_id)
         self.flush_timer_id = nil
     end
     if self.log_fd then
@@ -222,15 +249,3 @@ return {
     Logger = Logger,
     LogLevel = LogLevel
 }
--- Usage example:
--- local logger = require("dawn.Dawn_v1.utils.logger").Logger:new(dawn_instance)    
--- logger:log(logger.LogLevel.INFO, "This is an info message", "my_component")
--- logger:setComponentLevel("my_component", logger.LogLevel.DEBUG)
--- logger:log(logger.LogLevel.DEBUG, "This is a debug message", "my_component")
--- logger:addSubscriber("client1", { level = "DEBUG", component = "my_component" })
--- logger:log(logger.LogLevel.ERROR, "This is an error message", "my_component")
--- logger:removeSubscriber("client1")
--- logger:shutdown()
--- logger:log(logger.LogLevel.FATAL, "This is a fatal error message", "my_component")
---     print("[Logger] Server started on port 3000")
--- logger:log(logger.LogLevel.INFO, "Server started on port 3000", "server")

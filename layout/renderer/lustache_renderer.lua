@@ -73,6 +73,25 @@ function M:render(template_name, data)
     return result
 end
 
+-- add rednder without view just data 
+
+function M:direct_render(template_output, data)
+   
+    local template_content = template_output
+
+    local success, result = xpcall(function()
+        return lustache:render(template_content, data or {}, {
+            -- Pass the custom partial_resolver function within an options table
+            partial_resolver = partial_resolver
+        })
+    end, debug.traceback)
+
+    if not success then
+        error("Lustache rendering error for no template view expected \n" .. result)
+    end
+    return result
+end
+
 -- In development, you might want to clear the cache for hot-reloading
 function M.clear_cache()
     CACHED_TEMPLATES = {}

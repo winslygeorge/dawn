@@ -39,6 +39,7 @@ function Controller:extends()
     new_controller.viewEngine = viewEngine
     new_controller.req = nil
     new_controller.res = nil
+    new_controller.server = nil
 
     ---
     -- Called when the controller is created. Override to initialize state.
@@ -50,9 +51,10 @@ function Controller:extends()
     -- Sets the HTTP request and response context.
     -- @param req table Request object
     -- @param res table Response object
-    function new_controller:setContext(req, res)
+    function new_controller:setContext(req, res, server)
         self.req = req
         self.res = res
+        self.server = server
     end
 
     ---

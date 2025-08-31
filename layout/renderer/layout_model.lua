@@ -48,6 +48,7 @@ function Model:extend(server_obj, controller, props)
     new_model._props = props or {}
     new_model._req = server_obj.req or nil
     new_model._res = server_obj.res or nil
+    new_model._server = server_obj.server_instance
     new_model._log = print -- default logger
 
     --- Hook for setup before render (can yield).
@@ -74,7 +75,8 @@ function Model:extend(server_obj, controller, props)
         assert(self._res, "Response object cannot be nil")
 
         local ctrl = self._controller:new()
-        ctrl:setContext(self._req, self._res)
+        
+        ctrl:setContext(self._req, self._res, self._server)
         ctrl:dispatch("index")
     end
 

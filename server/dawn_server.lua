@@ -9,6 +9,11 @@ local URLParamExtractor = require("utils.query_extractor")
 local log_level = require('utils.logger').LogLevel
 local TokenCleaner = require("auth.token_cleaner")
 local Logger = require("utils.logger").Logger
+local ServerpatchQueue = require('utils.server_patch_queue')
+local DawnWatcher = require('utils.DawnWatcher')
+local app_uws = nil
+
+local restart_self = nil
 
 local extractor = URLParamExtractor:new()
 
@@ -121,7 +126,10 @@ DawnServer.__index = DawnServer
 
 function DawnServer:new(config)
     local self = setmetatable({}, DawnServer)
+    self.dawnProcessChild = nil
     self.config = config or {}
+    self.uws = uws.create_app()
+    app_uws = self.uws
     self.logger = Logger:new(self)
     self.logger:setComponentLevel("DawnServer", config.level)
     self.router = TrieNode:new(self.logger)
@@ -129,11 +137,13 @@ function DawnServer:new(config)
     self.error_handlers = { middleware = nil, route = {} }
     self.supervisor = Supervisor:new(self, "WebServerSupervisor", "one_for_one", self.logger)
     self.port = config.port or 3000
+    self.heartbeat_config = config.heartbeat_config or nil
     self.running = false
     self.multipart_parser_options = config.multipart_parser_options or nil
     self.token_store = config.token_store or {
         store = nil,  cleanup_interval =  1800
     }
+    self.reactive_render_engine = config.reactive_render_engine or nil
     self.route_scopes = {}
     self.routes = {}
     self.request_parsers = {}
@@ -141,19 +151,42 @@ function DawnServer:new(config)
         sessions = {},
         players = {},
         metrics = {},
+        changed_files = {}
     }
+
+    self.patch_queue = ServerpatchQueue
     -- New member to store static file configurations
     self.static_configs = config.static_configs or {}
 
     local DawnSockets = require("dawn_sockets")
     self.dawn_sockets_handler = DawnSockets:new(self, self.supervisor, self.shared_state, self.config.state_management_options or {})
-    self.dawn_sockets_handler:start_heartbeat(500000, 200000) -- Start heartbeat with 10 seconds interval
+    if(self.heartbeat_config) then 
+    self.dawn_sockets_handler:start_heartbeat(self.heartbeat_config.interval, self.heartbeat_config.timeout) -- Start heartbeat with 10 seconds interval
+    end
+
+    if(self.reactive_render_engine) then
+        self.dawn_sockets_handler:setReactiveRenderEngine(self.reactive_render_engine)
+    end
+
     if self.token_store.store then
         self.logger:log(log_level.INFO, "SETTING UP LOGGER", 'dawn_server', 345)
 
         local cleaner = TokenCleaner:new("TokenCleaner", self.token_store.cleanup_interval, self)
         self.supervisor:startChild(cleaner)
     end
+
+    self.dev_watcher = DawnWatcher:new(self, config.dev_watcher_config or {
+        interval = 1, -- seconds
+        paths = {
+            components = "./lib/*.lua",
+            views = "./views/**/*.lua",
+            static = "./public/**/*.{css,js}"
+        }
+    })
+    self.ROUTES_REGISTERED = nil
+
+    restart_self = self
+
     return self
 end
 
@@ -167,6 +200,76 @@ function DawnServer:on_route_error(route, handler)
     assert(type(route) == "string", "Route for error handler must be a string.")
     assert(type(handler) == "function", "Route error handler must be a function.")
     self.error_handlers.route[route:lower()] = handler
+end
+
+-- List of required methods for a reactive component
+local REQUIRED_COMPONENT_METHODS = {
+    "patch",            -- Handles WebSocket events
+    "setState",         -- Updates state and returns patches
+    "renderAppPage"     -- Used to generate the full HTML + state
+}
+
+
+--- 📦 Register a reactive component for WebSocket state patching.
+-- Stores it in shared_state under a given key.
+-- @param component table - Component instance (with .patch, .setState, .renderAppPage)
+-- @param key string? - Storage key (default: "app_component_instance")
+function DawnServer:register_reactive_component(component, key)
+    key = key or "app_component_instance"
+
+    if not self or not self.shared_state then
+        error("[Dawn] Cannot register component: server not attached or missing shared_state.")
+    end
+
+    if type(component) ~= "table" then
+        error("[Dawn] Component must be a table, got: " .. type(component))
+    end
+
+    -- Validate required methods
+    for _, method in ipairs(REQUIRED_COMPONENT_METHODS) do
+        if type(component[method]) ~= "function" then
+            -- print(string.format("[Dawn] ⚠️ Warning: Component under key '%s' is missing method '%s'", key, method))
+        end
+    end
+
+    if(self.shared_state[key]) then
+            -- print(string.format("[Dawn] X ALready Registered reactive component under key '%s'", key))
+
+    else
+            self.shared_state[key] = component
+                -- print(string.format("[Dawn] ✅ Registered reactive component under key '%s'", key))
+
+    end
+end
+
+--- 🔍 Get a reactive component from shared_state.
+-- @param key string? - Component key (default: "app_component_instance")
+-- @return table | nil - The component instance or nil
+function DawnServer:get_component(key)
+    key = key or "app_component_instance"
+    if not self or not self.shared_state then return nil end
+    
+    return self.shared_state[key]
+end
+
+--- 🧠 Get just the current state of a reactive component.
+-- @param key string? - Component key
+-- @return table - Component state (or empty table if missing)
+function DawnServer:get_component_state(key)
+    local comp = self:get_component(key)
+    return comp and comp.state or {}
+end
+
+--- 📛 Generate a namespaced patch key: "component_key.field"
+-- Useful for client filtering or debugging
+-- @param component_key string
+-- @param field string
+-- @return string
+function DawnServer:get_patch_namespace(component_key, field)
+    if component_key and field then
+        return component_key .. "." .. field
+    end
+    return field or ""
 end
 
 function DawnServer:use(middleware, route)
@@ -220,29 +323,29 @@ function DawnServer:serveStatic(route_prefix, directory_path)
     })
 end
 
--- new function to expose uws.setTimout functions 
-function DawnServer:setTimeout(callback, delay, ...)
-    return uws.setTimeout(callback, delay, ...)
-end
-
--- new function to expose uws.setInterval functions
+-- Corrected wrapper to use a dot for a regular function call
 function DawnServer:setInterval(callback, interval, ...)
-    return uws.setInterval(callback, interval, ...)
+    return self.uws.setInterval(callback, interval, ...)
 end
 
--- new function to expose uws.clearTimer functions
+-- Corrected wrapper to use a dot for a regular function call
+function DawnServer:setTimeout(callback, delay, ...)
+    return self.uws.setTimeout(callback, delay, ...)
+end
+
+-- The clearTimer function is fine, as it's a single argument.
 function DawnServer:clearTimer(timer_id)
-    return uws.clearTimer(timer_id)
+    return self.uws.clearTimer(timer_id)
 end
 
 -- New function to send SSE data
 function DawnServer:sse_send(sse_id, data)
-    return uws.sse_send(sse_id, data)
+    return self.uws.sse_send(sse_id, data)
 end
 
 -- New function to close SSE connection
 function DawnServer:sse_close(sse_id)
-    return uws.sse_close(sse_id)
+    return self.uws.sse_close(sse_id)
 end
 
 local function parseQuery(url)
@@ -331,9 +434,11 @@ end
 
 
 function DawnServer:run()
+    print("DawnServer is starting...")
+    print("is running : ", tostring(self.running))
     if self.running then return end
     self.running = true
-    uws.create_app()
+    -- self.uws.create_app()
     local self_ref = self
 
     local function decodeURIComponent(str)
@@ -353,8 +458,8 @@ function DawnServer:run()
 
         -- Important: Before router.search, check if the request should be handled by static serving
         -- This logic needs to be outside the route handler loop, handled by uWS itself
-        -- The C++ shim will handle this by registering the wildcard route `/static/*`
-
+        -- First check if this is a static file request
+    
         local handler_info, params = self_ref.router:search(method, path)
         local req = {
             _raw = _req,
@@ -371,9 +476,9 @@ function DawnServer:run()
             if executeMiddleware(self_ref, req, res, path, self_ref.middlewares, 1) then
                 method = string.upper(method)
                 if method == "WS" then
-                    res:writeStatus(404):send("Not Found") -- WS handled by specific uws.ws callback
+                    res:writeStatus(404):send("Not Found") -- WS handled by specific self.uws.ws callback
                 elseif method == "GET" or method == "DELETE" or method == "HEAD" or method == "OPTIONS" then
-                    -- SSE GET requests are handled by uws.sse directly, not through handleRequest body parsing
+                    -- SSE GET requests are handled by self.uws.sse directly, not through handleRequest body parsing
                     local ok, err = pcall(function()
                         handler(req, res, query_params)
                     end)
@@ -477,7 +582,7 @@ end
             local method = node.handler.method:lower()
             local routePath = prefix
             if method == "ws" then
-                uws.ws(routePath, function(ws, event, message, code, reason)
+                self.uws.ws(routePath, function(ws, event, message, code, reason)
                     if event == "open" then
                         local fake_req = {
                             method = "WS",
@@ -501,6 +606,7 @@ end
                     elseif event == "message" then
                         self_ref.dawn_sockets_handler:handle_message( ws, message, code)
                     elseif event == "close" then
+                        print("close ", ws)
                         self_ref.dawn_sockets_handler:handle_close( ws, code, reason)
                     end
                 end)
@@ -508,7 +614,7 @@ end
 
                -- check if routePath contains '/sse/' to handle SSE
                 if routePath:find("/sse/") then
-                    uws.sse(routePath, function(req, sse_id)
+                    self.uws.sse(routePath, function(req, sse_id)
                         local fake_req = {
                             method = "GET",
                             url = routePath,
@@ -519,7 +625,7 @@ end
                         fake_res.writeHeader = function() return fake_res end
                         fake_res.writeStatus = function() return fake_res end
                         fake_res.send = function(data)
-                            uws.sse_send(sse_id, data)
+                            self.uws.sse_send(sse_id, data)
                         end
                         local ok = executeMiddleware(self_ref, fake_req, fake_res, routePath, self_ref.middlewares, 1)
                         if ok then
@@ -531,7 +637,7 @@ end
                                     handler(fake_req, fake_res, query_params)
                                 else
                                     -- If no specific SSE handler is found, send a default message
-                                    uws.sse_send(sse_id, "Default SSE message", "default")
+                                    self.uws.sse_send(sse_id, "Default SSE message", "default")
                                     self:sse_close(sse_id)
                                     print("[SSE] No handler found for SSE route:", routePath)
                                 end
@@ -541,10 +647,10 @@ end
                         end
                     end)
                 else
-                    uws[method](routePath, handleRequest)
+                    self.uws[method](routePath, handleRequest)
                 end
             elseif method == "post" or method == "put" or method == "patch" then
-                uws[method](routePath, handleRequest)
+                self.uws[method](routePath, handleRequest)
             end
         end
         for path, child in pairs(node.children) do
@@ -559,14 +665,15 @@ end
     end
     registerRouteHandlers(self.router, "")
 
-    -- Register static file serving using the new uws.serve_static function
+    -- Register static file serving using the new self.uws.serve_static function
     for _, config in ipairs(self_ref.static_configs) do
         self_ref.logger:log(log_level.INFO, string.format("Serving static files from '%s' at route '%s'", config.directory_path, config.route_prefix), "DawnServer")
-        uws.serve_static(config.route_prefix, config.directory_path)
+        self.uws.serve_static(config.route_prefix, config.directory_path)
+
     end
 
     self:printRoutes()
-    uws.listen(self.port, function(token)
+    self.uws.listen(self.port, function(token)
         if token then
             self.logger:log(log_level.INFO, "Server started on port " .. self.port, "DawnServer")
         else
@@ -576,41 +683,205 @@ end
 
 end
 
+function DawnServer:restart_run()
+    -- Re-register route handlers
+    local self_ref = self
+
+    local function handleRequest(_req, res, chunk, is_last)
+        local path = _req:getUrl():match("^[^?]*")
+        if path ~= "/" and path:sub(-1) == "/" then
+            path = path:sub(1, -2)
+        end
+        local method = extractHttpMethod(_req.method)
+
+        local handler_info, params = self_ref.router:search(method, path)
+        local req = {
+            _raw = _req,
+            params = params,
+            method = method
+        }
+
+        self_ref.logger:log(log_level.DEBUG,
+            string.format("Method: %s, Path: %s, Handler Found: %s",
+                method, path, tostring(handler_info ~= nil)),
+            "DawnServer"
+        )
+
+        if not handleCORS(req, res) then return end
+
+        if handler_info then
+            local handler = handler_info
+            local query_params = parseQuery(_req.url)
+            if executeMiddleware(self_ref, req, res, path, self_ref.middlewares, 1) then
+                local ok, err = pcall(handler, req, res, query_params)
+                if not ok then
+                    self_ref.logger:log(log_level.ERROR,
+                        string.format("Error in route handler for %s %s: %s",
+                            method, path, tostring(err)),
+                        "DawnServer"
+                    )
+                    res:writeStatus(500):send("Internal Server Error")
+                end
+            end
+        else
+            res:writeStatus(404):send("Not Found")
+        end
+    end
+
+    -- Register WS, SSE, and HTTP routes
+    local function registerRouteHandlers(node, prefix)
+        if node.handler then
+            local method = node.handler.method:lower()
+            local routePath = prefix
+
+            if method == "ws" then
+                self.uws.ws(routePath, function(ws, event, message, code, reason)
+                    if event == "open" then
+                        self_ref.dawn_sockets_handler:handle_open(ws, message)
+                    elseif event == "message" then
+                        self_ref.dawn_sockets_handler:handle_message(ws, message, code)
+                    elseif event == "close" then
+                        self_ref.dawn_sockets_handler:handle_close(ws, code, reason)
+                    end
+                end)
+
+            elseif method == "get" or method == "delete"
+                or method == "head" or method == "options" then
+
+                if routePath:find("/sse/") then
+                    self.uws.sse(routePath, function(req, sse_id)
+                        local ok = executeMiddleware(self_ref, req, {}, routePath, self_ref.middlewares, 1)
+                        if ok then
+                            local handler_info = self_ref.router:search(method, routePath)
+                            if handler_info then
+                                handler_info(req, {}, parseQuery(req.url))
+                            else
+                                self.uws.sse_send(sse_id, "Default SSE message", "default")
+                                self.uws.sse_close(sse_id)
+                            end
+                        end
+                    end)
+                else
+                    self.uws[method](routePath, handleRequest)
+                end
+
+            elseif method == "post" or method == "put" or method == "patch" then
+                self.uws[method](routePath, handleRequest)
+            end
+        end
+
+        for path, child in pairs(node.children) do
+            local nextPrefix = prefix .. "/" .. path
+            registerRouteHandlers(child, nextPrefix)
+        end
+    end
+
+    registerRouteHandlers(self.router, "")
+
+    -- Re-register static file serving
+    for _, config in ipairs(self_ref.static_configs) do
+        self_ref.logger:log(log_level.INFO,
+            string.format("Serving static files from '%s' at route '%s'",
+                config.directory_path, config.route_prefix),
+            "DawnServer"
+        )
+        self.uws.serve_static(config.route_prefix, config.directory_path)
+    end
+
+    self:printRoutes()
+ 
+end
+
+
+function DawnServer:restart()
+   return  self.supervisor:restartChild(self.dawnProcessChild)
+end
+
 function DawnServer:stop()
     if self.running then
         self.running = false
-        uv.stop()
-        uws.cleanup_app()
+        self.uws.cleanup_app()
         self.logger:log(log_level.INFO, "Dawn Server stopped", "DawnServer")
     end
 end
 
+-- Define the restart hook once
+function on_restart_register(app)
+  print("[Lua] Re-registering routes after restart...")
+
+  if not restart_self then
+      print("[Lua] Error: restart_self is nil, cannot re-register routes.")
+      return
+  end
+
+  restart_self.uws = app
+
+--   restart_self.ROUTES_REGISTERED:load(restart_self):registerAllRoutes()
+
+  restart_self:restart_run()
+end
+
+
 function DawnServer:start()
-    local dawnProcessChild = {
+    self.dawnProcessChild = {
         name = "DawnServer_Supervisor",
         start = function()
-            self.logger:log(log_level.INFO, "Dawn Server connection started".. self.port, "DawnServer")
+             if self.dev_watcher then
+                    self.dev_watcher:start()
+            end
+            self.logger:log(log_level.INFO, "Dawn Server connection started ".. self.port, "DawnServer")
             self:run()
-            local ok, err = pcall(uws.run)
+            local ok, err = pcall(self.uws.run)
             if not ok then
                 self.logger:log(log_level.ERROR, "Fatal server error: " .. tostring(err), "DawnServer")
+                return false
             end
+
             return true
         end,
         stop = function()
             self.logger:log(log_level.INFO, "Dawn Server connection stopped", "DawnServer")
-            self:stop() -- Ensure this is called to stop the C++ server and cleanup
+            if self.dev_watcher then
+                self.dev_watcher:stop()
+            end
+            self:stop()
             self.logger:Shutdown()
             return true
         end,
         restart = function()
-            self.logger:log(log_level.WARN, "Dawn Server connection restarted on port ".. self.port, "DawnServer")
+            if not self.running then
+                self.logger:log(log_level.WARN, "Server is not running, cannot restart.", "DawnServer")
+                return
+            end
+
+            self.uws.restart_cleanup()
+
+            -- 🔑 Use new unified restart (returns new userdata!)
+            self.uws = self.uws.restart_reregister(self.port, function(success, err)
+                if success then
+                    print("✅ Restart complete on port " .. self.port)
+                       -- Notify clients only after successful restart
+                    self.shared_state.sockets:broadcast_to_all({
+                        type = "reload",
+                        changed = self.shared_state.changed_files or nil
+                    })
+
+                    if self.dev_watcher then
+                    self.dev_watcher:start()
+            end
+                else
+                    print("❌ Restart failed:", err)
+                end
+            end)
+
             return true
         end,
         restart_policy = "transient",
         restart_count = 5,
         backoff = 5000
     }
-    self.supervisor:startChild(dawnProcessChild)
+    self.supervisor:startChild(self.dawnProcessChild)
 end
+
+
 return DawnServer
