@@ -1,7 +1,7 @@
 -- MustacheHTMLBuilder.lua
 -- Converts Lua tables to HTML5-compliant Mustache templates using the Enums helper
 
-local Enums = require("HTML_Enums")
+local Enums = require("layout.renderer.HTML_Enums")
 local Builder = {}
 
 -- Pre-compute frequently used strings and patterns for performance

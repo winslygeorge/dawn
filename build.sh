@@ -4,7 +4,7 @@ set -e
 
 # === CONFIGURATION ===
 PACKAGE="dawn"
-VERSION="1.2-0"
+VERSION="1.2-1"
 ROCKSPEC_NAME="$PACKAGE-$VERSION.rockspec"
 C_SRC="server/check_version.cpp"
 
