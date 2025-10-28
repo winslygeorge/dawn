@@ -12,7 +12,7 @@ Enums.Tags = {
   "map", "area", "svg", "math", "table", "caption", "colgroup", "col", "tbody", "thead",
   "tfoot", "tr", "td", "th", "form", "label", "input", "button", "select", "datalist",
   "optgroup", "option", "textarea", "output", "progress", "meter", "fieldset", "legend",
-  "details", "summary", "dialog", "script", "noscript", "template", "slot", "portal"
+  "details", "summary", "dialog", "script", "noscript", "template", "slot", "portal", "curve-element"
 }
 
 -- Global attributes (shared across tags)
@@ -40,7 +40,8 @@ Enums.AttributesByTag = {
   script = { "src", "type", "async", "defer", "crossorigin" },
   meta = { "name", "content", "charset", "http-equiv" },
   div = { "id", "class", "style", "data-*", "role" },
-  span = { "id", "class", "style", "data-*", "role" }
+  span = { "id", "class", "style", "data-*", "role" },
+  ["curve-element"] = { "width", "height", "equation", "svg-path", "color", "precision", "curve-type", "overflow" },
 }
 
 -- Expected values

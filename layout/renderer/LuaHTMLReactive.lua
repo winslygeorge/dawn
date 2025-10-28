@@ -263,6 +263,11 @@ HTML.client = {
     --- @param sel string CSS selector.
     --- @return ClientOperation
     getValue    = function(sel) return { _op = "getValue", selector = sel } end,
+    -- get the elements attribute value
+    --- @param sel string CSS selector.
+    --- @param attr string The attribute name to get.
+    --- @return ClientOperation
+    getAttr     = function(sel, attr) return { _op = "getAttr", selector = sel, attr = attr } end,
     --- Hides elements matching the selector by setting `display: none`.
     --- @param sel string CSS selector.
     --- @return ClientOperation
@@ -752,6 +757,75 @@ end,
 
 }
 
+--------------------------------------------------
+-- File Reader + Media + Streaming
+--------------------------------------------------
+------------------------------------------------
+
+-- In your HTML.client module
+
+-- Existing function with a new 'name' parameter
+function HTML.client.readFileAsText(selector, name, onResult)
+    return {
+        _op = "readFileAsText",
+        selector = selector,
+        name = name, -- This is the key change
+        onResult = onResult,
+    }
+end
+
+-- Update the existing readFileAsDataURL function
+function HTML.client.readFileAsDataURL(selector, name, onResult)
+    return {
+        _op = "readFileAsDataURL",
+        selector = selector,
+        name = name, -- This is the key change
+        onResult = onResult,
+    }
+end
+
+function HTML.client.readFileAsJSON(selector, onResult)
+    return { _op = "readFileAsJSON", selector = selector, onResult = onResult }
+end
+
+function HTML.client.readFileAsAudio(selector, onResult, opts)
+    return {
+        _op = "readFileAsAudio",
+        selector = selector,
+        onResult = onResult,
+        target = opts and opts.target or nil
+    }
+end
+
+function HTML.client.readFileAsVideo(selector, onResult, opts)
+    return {
+        _op = "readFileAsVideo",
+        selector = selector,
+        onResult = onResult,
+        target = opts and opts.target or nil
+    }
+end
+
+function HTML.client.streamFile(selector, opts)
+    return {
+        _op = "streamFile",
+        selector = selector,
+        chunkSize = opts.chunkSize,
+        onChunk = opts.onChunk,
+        onComplete = opts.onComplete,
+        targetProgress = opts.targetProgress,
+        targetPreview = opts.targetPreview
+    }
+end
+
+-- Add this to your HTML.client module in LuaHTMLReactive.lua
+function HTML.client.storeVar(name, value)
+    return {
+        _op = "storeVar",
+        name = name,
+        value = value,
+    }
+end
 
 
 -- 👇 Optional shorthand numeric/eq helpers (extra sugar)
@@ -834,6 +908,106 @@ function HTML.client.cmp(left, operator, right)
     return { left = left, operator = operator, right = right }
 end
 
+-- Client DSL DOM manipulation
+
+-- Basic insertion / removal / replace
+function HTML.client.append(sel, html) return { _op = "append", selector = sel, value = html } end
+function HTML.client.prepend(sel, html) return { _op = "prepend", selector = sel, value = html } end
+function HTML.client.remove(sel) return { _op = "remove", selector = sel } end
+function HTML.client.replace(sel, html) return { _op = "replace", selector = sel, value = html } end
+function HTML.client.replaceWith(sel, html) return { _op = "replaceWith", selector = sel, value = html } end
+function HTML.client.clear(sel) return { _op = "clear", selector = sel } end
+
+-- Insert relative
+function HTML.client.insertBefore(sel, html) return { _op = "insertBefore", selector = sel, value = html } end
+function HTML.client.insertAfter(sel, html) return { _op = "insertAfter", selector = sel, value = html } end
+
+-- Wrap / unwrap
+function HTML.client.wrap(sel, tag, attributes)
+    return {
+        _op = "wrap",
+        selector = sel,
+        tag = tag,
+        attributes = attributes
+    }
+end
+
+
+function HTML.client.wrapAll(sel, tag, attributes)
+    return {
+        _op = "wrapAll",
+        selector = sel,
+        tag = tag,
+        attributes = attributes
+    }
+end
+
+
+-- Replace children / clone / move / swap
+function HTML.client.replaceChildren(sel, html) return { _op = "replaceChildren", selector = sel, value = html } end
+function HTML.client.clone(sel, deep) return { _op = "clone", selector = sel, deep = deep or false } end
+function HTML.client.move(sel, targetSel, position) return { _op = "move", selector = sel, target = targetSel, position = position or "beforeend" } end
+
+-- Collection / ordering
+function HTML.client.sort(sel, compare) return { _op = "sort", selector = sel, compare = compare or "text" } end
+function HTML.client.reverse(sel) return { _op = "reverse", selector = sel } end
+function HTML.client.shuffle(sel) return { _op = "shuffle", selector = sel } end
+
+-- Array-style
+function HTML.client.push(sel, html) return { _op = "push", selector = sel, value = html } end
+function HTML.client.pop(sel) return { _op = "pop", selector = sel } end
+function HTML.client.unshift(sel, html) return { _op = "unshift", selector = sel, value = html } end
+function HTML.client.shift(sel) return { _op = "shift", selector = sel } end
+function HTML.client.slice(sel, start, finish) return { _op = "slice", selector = sel, start = start or 0, finish = finish } end
+function HTML.client.splice(sel, start, deleteCount, html) return { _op = "splice", selector = sel, start = start or 0, deleteCount = deleteCount or 0, value = html } end
+function HTML.client.split(sel, size) return { _op = "split", selector = sel, size = size or 2 } end
+function HTML.client.concat(selA, selB, targetSel) return { _op = "concat", a = selA, b = selB, target = targetSel } end
+function HTML.client.swap(selA, selB) return { _op = "swap", a = selA, b = selB } end
+
+-- Functional (map/filter/reduce) & helpers
+function HTML.client.map(sel, transform) return { _op = "map", selector = sel, transform = transform } end
+function HTML.client.filter(sel, condition) return { _op = "filter", selector = sel, condition = condition } end
+function HTML.client.reduce(sel, accumulator) return { _op = "reduce", selector = sel, accumulator = accumulator } end
+
+-- Grouping / grouping-like ops
+function HTML.client.groupBy(sel, key) return { _op = "groupBy", selector = sel, key = key } end
+function HTML.client.partition(sel, condition) return { _op = "partition", selector = sel, condition = condition } end
+function HTML.client.flatten(sel) return { _op = "flatten", selector = sel } end
+function HTML.client.nest(sel, wrapperTag, levels) return { _op = "nest", selector = sel, tag = wrapperTag or "div", levels = levels or 1 } end
+
+-- Dedup / unique
+function HTML.client.unique(sel, mode) return { _op = "unique", selector = sel, mode = mode or "text" } end
+function HTML.client.deduplicate(sel, key) return { _op = "deduplicate", selector = sel, key = key } end
+
+-- Pairing / merging / zipping / cartesian
+function HTML.client.zip(selA, selB, targetSel) return { _op = "zip", a = selA, b = selB, target = targetSel } end
+function HTML.client.zipWith(selA, selB, targetSel, template) return { _op = "zipWith", a = selA, b = selB, target = targetSel, template = template } end
+function HTML.client.cartesian(selA, selB, targetSel, template) return { _op = "cartesian", a = selA, b = selB, target = targetSel, template = template } end
+function HTML.client.cartesianN(selectors, targetSel, template) return { _op = "cartesianN", selectors = selectors, target = targetSel, template = template } end
+
+-- Combinatorics: combinations / permutations / power sets / with replacement
+function HTML.client.combinations(sel, k, targetSel, template) return { _op = "combinations", selector = sel, k = k, target = targetSel, template = template } end
+function HTML.client.permutations(sel, k, targetSel, template) return { _op = "permutations", selector = sel, k = k, target = targetSel, template = template } end
+function HTML.client.powerSet(sel, targetSel, key) return { _op = "powerSet", selector = sel, target = targetSel, key = key } end
+function HTML.client.combinationsWithReplacement(sel, k, targetSel, template) return { _op = "combinationsWithReplacement", selector = sel, k = k, target = targetSel, template = template } end
+function HTML.client.permutationsWithReplacement(sel, k, targetSel, template) return { _op = "permutationsWithReplacement", selector = sel, k = k, target = targetSel, template = template } end
+
+-- Set algebra ops
+function HTML.client.union(selA, selB, targetSel, key) return { _op = "union", a = selA, b = selB, target = targetSel, key = key } end
+function HTML.client.intersect(selA, selB, targetSel, key) return { _op = "intersect", a = selA, b = selB, target = targetSel, key = key } end
+function HTML.client.difference(selA, selB, targetSel, key) return { _op = "difference", a = selA, b = selB, target = targetSel, key = key } end
+function HTML.client.relativeComplement(selA, selB, targetSel, key) return { _op = "relativeComplement", a = selA, b = selB, target = targetSel, key = key } end
+function HTML.client.symmetricDifference(selA, selB, targetSel, key) return { _op = "symmetricDifference", a = selA, b = selB, target = targetSel, key = key } end
+
+-- Boolean set relations
+function HTML.client.isSubset(selA, selB, key) return { _op = "isSubset", a = selA, b = selB, key = key } end
+function HTML.client.isSuperset(selA, selB, key) return { _op = "isSuperset", a = selA, b = selB, key = key } end
+function HTML.client.isDisjoint(selA, selB, key) return { _op = "isDisjoint", a = selA, b = selB, key = key } end
+function HTML.client.isEqual(selA, selB, key) return { _op = "isEqual", a = selA, b = selB, key = key } end
+
+-- Quantifier
+function HTML.client.cardinality(sel, key) return { _op = "cardinality", selector = sel, key = key } end
+
 
 
 --------------------------------------------------
@@ -900,7 +1074,8 @@ function HTML.on(events, handlerSpec)
                 elseif type(arg) == "table" then
                     -- Corrected: Encode to JSON and replace double quotes with single quotes.
                     local json_str = cjson.encode(arg)
-                    table.insert(argsStr, json_str:gsub('"', "'"))
+                    local v1, v2 = json_str:gsub('"', "'")
+                    table.insert(argsStr, v1)
                 else
                     table.insert(argsStr, tostring(arg))
                 end
@@ -1217,6 +1392,249 @@ function HTML.merge(a, b)
 end
 
 
+-- 📁 File Input Elements
+--------------------------------------------------
+--------------------------------------------------
+--- Creates an image file input with preview capability.
+--- @param name string The 'name' attribute for the input.
+--- @param preview_id string? Custom ID for the preview element (default: name .. "_preview").
+--- @param attrs table? Additional attributes for the input.
+--- @return VDOMNode
+function HTML.ImageInput(name, preview_id, attrs)
+    local previewId = preview_id or name .. "_preview"
+    
+    return HTML.fragment({
+        HTML.e("input", HTML.merge({
+            type = "file",
+            name = name,
+            accept = "image/*",
+            class = "px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent",
+            ["data-bind"] = name,
+            onchange = string.format(
+                "window.__clientOp__(%s)",
+                cjson.encode(
+                    HTML.client.readFileAsDataURL(
+                        "input[name=\"" .. name .. "\"]",
+                        name, -- Pass the name as the second argument
+                        HTML.client.batch(
+                            HTML.client.setAttrs("#" .. previewId, { src = "__VALUE__" }),
+                            HTML.client.removeClass("#" .. previewId, "hidden")
+                        )
+                    )
+                ):gsub('"', "'")
+            )
+        }, attrs or {}))
+    })
+end
+
+--------------------------------------------------
+--- Creates a general file input with preview capability (images, PDFs, etc.).
+--- @param name string The 'name' attribute for the input.
+--- @param preview_id string? Custom ID for the preview element (default: name .. "_preview").
+--- @param attrs table? Additional attributes for the input.
+--- @return VDOMNode
+function HTML.FileInput(name, preview_id, attrs)
+    local previewId = preview_id or name .. "_preview"
+
+    return HTML.fragment({
+        HTML.e("input", HTML.merge({
+            type = "file",
+            name = name,
+            class = "px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent",
+            ["data-bind"] = name,
+            onchange = string.format(
+                "window.__clientOp__(%s)",
+                cjson.encode(
+                    HTML.client.readFileAsDataURL(
+                        "input[name=\"" .. name .. "\"]",
+                        name, -- Pass the name as the second argument
+                        HTML.client.batch(
+                            HTML.client.setAttrs("#" .. previewId, { src = "__VALUE__" }),
+                            HTML.client.removeClass("#" .. previewId, "hidden")
+                        )
+                    )
+                ):gsub('"', "'")
+            )
+        }, attrs or {}))
+    })
+end
+
+--------------------------------------------------
+--- Creates a drag-and-drop file input with preview capability.
+--- @param name string The 'name' attribute for the input.
+--- @param preview_id string? Custom ID for the preview element (default: name .. "_preview").
+--- @param attrs table? Additional attributes for the input.
+--- @return VDOMNode
+function HTML.DragDropInput(name, preview_id, attrs)
+    local previewId = preview_id or name .. "_preview"
+    local inputId = name .. "_input"
+
+    return HTML.fragment({
+        -- Hidden file input
+        HTML.e("input", HTML.merge({
+            type = "file",
+            id = inputId,
+            name = name,
+            class = "hidden",
+            ["data-bind"] = name,
+            onchange = string.format(
+                "window.__clientOp__(%s)",
+                cjson.encode(
+                    HTML.client.readFileAsDataURL(
+                        "#" .. inputId,
+                        name, -- Pass the name as the second argument
+                        HTML.client.batch(
+                            HTML.client.setAttrs("#" .. previewId, { src = "__VALUE__" }),
+                            HTML.client.removeClass("#" .. previewId, "hidden")
+                        )
+                    )
+                ):gsub('"', "'")
+            )
+        }, attrs or {})),
+
+        -- Drag & Drop Zone
+        HTML.e("div", {
+            class = "flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-400 rounded-lg cursor-pointer hover:border-blue-500 transition",
+            onclick = string.format("document.getElementById('%s').click()", inputId),
+            ondragover = "event.preventDefault(); this.classList.add('border-blue-500')",
+            ondragleave = "this.classList.remove('border-blue-500')",
+            ondrop = string.format([[
+                event.preventDefault();
+                this.classList.remove('border-blue-500');
+                const input = document.getElementById('%s');
+                input.files = event.dataTransfer.files;
+                input.dispatchEvent(new Event('change'));
+            ]], inputId)
+        }, {
+            HTML.e("p", { class = "text-gray-600" }, "Drag & drop a file here, or click to select")
+        })
+    })
+end
+
+--------------------------------------------------
+--- Creates an audio file input with preview capability.
+--- @param name string The 'name' attribute for the input.
+--- @param preview_id string? Custom ID for the preview element (default: name .. "_preview").
+--- @param attrs table? Additional attributes for the input.
+--- @return VDOMNode
+function HTML.AudioInput(name, preview_id, attrs)
+    local previewId = preview_id or name .. "_preview"
+    
+    return HTML.fragment({
+        HTML.e("input", HTML.merge({
+            type = "file",
+            name = name,
+            accept = "audio/*",
+            class = "px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent",
+            ["data-bind"] = name,
+            onchange = string.format(
+                "window.__clientOp__(%s)",
+                cjson.encode(
+                    HTML.client.readFileAsAudio(
+                        "input[name=\"" .. name .. "\"]",
+                        name, -- Pass the name as the second argument
+                        { target = "#" .. previewId }
+                    )
+                ):gsub('"', "'")
+            )
+        }, attrs or {}))
+    })
+end
+
+--------------------------------------------------
+--- Creates a video file input with preview capability.
+--- @param name string The 'name' attribute for the input.
+--- @param preview_id string? Custom ID for the preview element (default: name .. "_preview").
+--- @param attrs table? Additional attributes for the input.
+--- @return VDOMNode
+function HTML.VideoInput(name, preview_id, attrs)
+    local previewId = preview_id or name .. "_preview"
+    
+    return HTML.fragment({
+        HTML.e("input", HTML.merge({
+            type = "file",
+            name = name,
+            accept = "video/*",
+            class = "px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent",
+            ["data-bind"] = name,
+            onchange = string.format(
+                "window.__clientOp__(%s)",
+                cjson.encode(
+                    HTML.client.readFileAsVideo(
+                        "input[name=\"" .. name .. "\"]",
+                        name, -- Pass the name as the second argument
+                        { target = "#" .. previewId }
+                    )
+                ):gsub('"', "'")
+            )
+        }, attrs or {}))
+    })
+end
+
+--------------------------------------------------
+--- Creates a large file input with streaming capability and progress bar.
+--- @param name string The 'name' attribute for the input.
+--- @param accept string The accept attribute (e.g., "video/*", "audio/*").
+--- @param ws_id string The WebSocket ID for streaming uploads.
+--- @param preview_id string? Custom ID for the preview element.
+--- @param progress_id string? Custom ID for the progress element.
+--- @param chunk_size number? Chunk size in bytes (default: 256KB for video, 128KB for audio).
+--- @param attrs table? Additional attributes for the input.
+--- @return VDOMNode
+function HTML.StreamingFileInput(name, accept, ws_id, preview_id, progress_id, chunk_size, attrs)
+    local previewId = preview_id or name .. "_preview"
+    local progressId = progress_id or name .. "_progress"
+    local isVideo = accept:find("video") ~= nil
+    local defaultChunkSize = isVideo and (256 * 1024) or (128 * 1024)
+    
+    return HTML.fragment({
+        HTML.e("input", HTML.merge({
+            type = "file",
+            name = name,
+            accept = accept,
+            class = "px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent",
+            ["data-bind"] = name,
+            onchange = string.format(
+                "window.__clientOp__(%s)",
+                cjson.encode(
+                    HTML.client.streamFile(
+                        "input[name=\"" .. name .. "\"]",
+                        {
+                            chunkSize = chunk_size or defaultChunkSize,
+                            onChunk = {
+                                _op = "wsSend",
+                                id = ws_id,
+                                message = "__VALUE__"
+                            },
+                            onComplete = {
+                                _op = "console",
+                                level = "info",
+                                message = "Upload of " .. name .. " complete!"
+                            },
+                            targetProgress = "#" .. progressId,
+                            targetPreview = "#" .. previewId
+                        }
+                    )
+                ):gsub('"', "'")
+            )
+        }, attrs or {}))
+    })
+end
+
+--------------------------------------------------
+--- Creates a form field wrapper for file inputs with label and error handling.
+--- @param label string The label text.
+--- @param input_node VDOMNode The file input node.
+--- @param error string? Error message to display.
+--- @return VDOMNode
+function HTML.FileField(label, input_node, error)
+    return HTML.Column({}, {
+        HTML.e("label", { class = "text-sm font-medium text-gray-700 mb-1" }, label),
+        input_node,
+        error and HTML.e("div", { class = "text-red-500 text-sm mt-1" }, error) or nil
+    })
+end
+
 -- 🧱 Flutter-style Predefined Widgets
 
 -- --- Creates a card-style container div.
@@ -1333,6 +1751,85 @@ function HTML.Loader(style)
  })
 end
 
+--------------------------------------------------
+-- Custom Web Components (explicit parameters)
+--------------------------------------------------
+--- Create a <fluid-container> custom web component.
+---
+--- This component is a wrapper around the custom `<fluid-container>` web element
+--- implemented in `Fluid-Container.js`. It draws a curved SVG path background
+--- and lets you place child content inside it.
+---
+--- Parameters:
+---
+--- @param height string|number
+---   The vertical size (in pixels) of the container.  
+---   ⚡ Affects how tall the rendered `<fluid-container>` box is and also
+---   determines the vertical scaling of the internal curve/SVG path.
+---
+--- @param width string|number
+---   The horizontal size (in pixels) of the container.  
+---   ⚡ Determines how wide the container is and how much horizontal space
+---   the curve has to draw across.
+---
+--- @param equation string|nil
+---   A JavaScript expression used to calculate the Y-value of the curve
+---   for a given X. Example: `"Math.sin(x) * 5"`.  
+---   ⚡ Used only when `curve-type` is `"cartesian"`.  
+---   ⚠️ If this is set, `svg-path` is ignored.
+---
+--- @param svgPath string|nil
+---   A raw SVG path string (e.g. `"M0,100 Q150,50 300,100"`).  
+---   ⚡ Used when you want full control of the shape instead of an equation.  
+---   ⚠️ Overrides `equation` if both are set.
+---
+--- @param color string|nil
+---   The fill color for the curved area (CSS color format, e.g. `"#3498db"` or `"red"`).  
+---   ⚡ Affects the background appearance of the curve.  
+---   Internally, the component also generates a darker shade of this color
+---   for the curve’s shadow.
+---
+--- @param precision integer|nil
+---   The number of points used to sample the equation when generating the curve path.  
+---   ⚡ Higher precision = smoother curve, but more expensive rendering.  
+---   Default is 20.
+---
+--- @param curveType string|nil
+---   Defines how the equation should be interpreted. Supported values:  
+---   • `"cartesian"` → standard f(x) equation  
+---   • `"sin"` → sine-based curve  
+---   • `"cos"` → cosine-based curve  
+---   • `"circle"` → circular arc curve  
+---   • `"polar"` → polar coordinate curve  
+---   • `"parametric"` → parametric function curve  
+---   ⚡ Changing this alters how the `equation` string is evaluated.
+---
+--- @param overflow string|nil
+---   Controls how child content behaves outside the curve bounds.  
+---   • `"hidden"` → content is clipped to the curve shape (using SVG clipPath)  
+---   • `"visible"` → content can overflow freely outside the curve  
+---   ⚡ Default is `"hidden"`.
+---
+--- @param children table[]|string|nil
+---   The nested child nodes inside the container (strings or other `HTML.*` calls).  
+---   ⚡ These are slotted into the `<fluid-container>` as its content.
+---
+--- @return table Reactive HTML node representing <fluid-container>
+function HTML.FluidContainer(height, width, equation, svgPath, color, precision, curveType, overflow, children)
+  local attr = {
+    height       = height,
+    width        = width,
+    equation     = equation,
+    ["svg-path"] = svgPath,
+    color        = color,
+    precision    = precision,
+    ["curve-type"] = curveType,
+    overflow     = overflow,
+  }
+  return HTML.e("curve-element", attr, children)
+end
+
+
 --- Creates a pagination component with numbered buttons and Tailwind styling.
 --- @param current number The current active page number.
 --- @param total number The total number of pages.
@@ -1381,6 +1878,8 @@ function HTML.Label(for_id, text, attrs)
   class = "text-sm font-medium text-gray-700"
  }, attrs or {}), text)
 end
+
+
 
 --- Creates a text input field with Tailwind styling.
 --- @param name string The 'name' attribute for the input.
@@ -1628,7 +2127,9 @@ end
 function HTML.AutoForm(schema, values, errors)
  local children = {}
  for _, f in ipairs(schema.fields or {}) do
-  local input
+  local input, preview, progress
+  local ispreview = f.show_default_preview or true
+  local isprogress = f.show_default_progress or true
   local attrs = { name = f.name, required = f.required, ["data-bind"] = f.name } -- Add data-bind
   if f.placeholder then attrs.placeholder = f.placeholder end
   if f.bind then
@@ -1646,6 +2147,171 @@ function HTML.AutoForm(schema, values, errors)
    input = HTML.e("select", attrs, HTML.map(f.options, function(opt)
     return HTML.e("option", { value = opt }, opt)
    end))
+elseif f.type == "file" then
+            input = HTML.e("input", HTML.merge(attrs, {
+                type = "file",
+                name = f.name,
+                required = f.required and true or nil
+            }))
+
+        elseif f.type == "image" then
+            input = HTML.e("input", HTML.merge(attrs, {
+                type = "file",
+                accept = "image/*",
+                name = f.name,
+                required = f.required and true or nil,
+                onchange = string.format(
+                    "window.__clientOp__(%s)",
+                    cjson.encode(
+                        HTML.client.readFileAsDataURL(
+                            "input[name=\"" .. f.name .. "\"]",
+                            HTML.client.batch(
+                                HTML.client.setAttrs("#" .. f.name .. "_preview", { src = "__VALUE__" }),
+                                HTML.client.removeClass("#" .. f.name .. "_preview", "hidden")
+                            )
+                        )
+                    ):gsub('"', "'")
+                )
+  
+            }))
+            preview = ispreview and HTML.e("img", {
+                id = f.name .. "_preview",
+                class = "mt-2 max-h-48 rounded border hidden"
+            }) or nil
+
+        elseif f.type == "audio" then
+            input = HTML.e("input", HTML.merge(attrs, {
+                type = "file",
+                accept = "audio/*",
+                name = f.name,
+                required = f.required and true or nil,
+                onchange = string.format(
+                    "window.__clientOp__(%s)",
+                    cjson.encode(
+                        HTML.client.readFileAsAudio(
+                            "input[name=\"" .. f.name .. "\"]",
+                            nil,
+                            { target = "#" .. f.name .. "_preview" }
+                        )
+                    ):gsub('"', "'")
+                )
+            }))
+            preview = ispreview and HTML.e("audio", {
+                id = f.name .. "_preview",
+                class = "mt-2 hidden",
+                controls = true
+            }) or nil
+
+        elseif f.type == "video" then
+            input = HTML.e("input", 
+            HTML.merge(attrs, {
+
+                type = "file",
+                accept = "video/*",
+                name = f.name,
+                required = f.required and true or nil,
+                onchange = string.format(
+                    "window.__clientOp__(%s)",
+                    cjson.encode(
+                        HTML.client.readFileAsVideo(
+                            "input[name=\"" .. f.name .. "\"]",
+                            nil,
+                            { target = "#" .. f.name .. "_preview" }
+                        )
+                    ):gsub('"', "'")
+                )
+            }))
+            preview = ispreview and HTML.e("video", {
+                id = f.name .. "_preview",
+                class = "mt-2 hidden",
+                controls = true,
+                style = "max-height: 240px;"
+            }) or nil
+
+        elseif f.type == "largeVideo" then
+            input = HTML.e("input", HTML.merge(attrs, {
+                type = "file",
+                accept = "video/*",
+                name = f.name,
+                required = f.required and true or nil,
+                onchange = string.format(
+                    "window.__clientOp__(%s)",
+                    cjson.encode(
+                        HTML.client.streamFile(
+                            "input[name=\"" .. f.name .. "\"]",
+                            {
+                                chunkSize = f.chunkSize or 256 * 1024,
+                                onChunk = {
+                                    _op = "wsSend",
+                                    id = f.ws or "uploadSocket",
+                                    message = "__VALUE__"
+                                },
+                                onComplete = {
+                                    _op = "console",
+                                    level = "info",
+                                    message = "Upload of " .. f.name .. " complete!"
+                                },
+                                targetProgress = "#" .. f.name .. "_progress",
+                                targetPreview = "#" .. f.name .. "_preview"
+                            }
+                        )
+                    ):gsub('"', "'")
+                )
+            }))
+            preview = ispreview and HTML.e("video", {
+                id = f.name .. "_preview",
+                class = "mt-2 hidden",
+                controls = true,
+                style = "max-height: 240px;"
+            }) or nil
+            progress = isprogress and HTML.e("progress", {
+                id = f.name .. "_progress",
+                max = 100,
+                value = 0,
+                class = "mt-2 w-full"
+            }) or nil
+
+        elseif f.type == "largeAudio" then
+            input = HTML.e("input", HTML.merge(attrs, {
+                type = "file",
+                accept = "audio/*",
+                name = f.name,
+                required = f.required and true or nil,
+                onchange = string.format(
+                    "window.__clientOp__(%s)",
+                    cjson.encode(
+                        HTML.client.streamFile(
+                            "input[name=\"" .. f.name .. "\"]",
+                            {
+                                chunkSize = f.chunkSize or 128 * 1024,
+                                onChunk = {
+                                    _op = "wsSend",
+                                    id = f.ws or "uploadSocket",
+                                    message = "__VALUE__"
+                                },
+                                onComplete = {
+                                    _op = "console",
+                                    level = "info",
+                                    message = "Upload of " .. f.name .. " complete!"
+                                },
+                                targetProgress = "#" .. f.name .. "_progress",
+                                targetPreview = "#" .. f.name .. "_preview"
+                            }
+                        )
+                    ):gsub('"', "'")
+                )
+            }))
+            preview = ispreview and HTML.e("audio", {
+                id = f.name .. "_preview",
+                class = "mt-2 hidden",
+                controls = true
+            }) or nil
+            progress = isprogress and HTML.e("progress", {
+                id = f.name .. "_progress",
+                max = 100,
+                value = 0,
+                class = "mt-2 w-full"
+            }) or nil
   else
    input = HTML.e("input", HTML.merge(attrs, { type = f.type or "text", value = values and values[f.name] }))
   end
@@ -1653,6 +2319,10 @@ function HTML.AutoForm(schema, values, errors)
    HTML.e("label", {}, f.label or f.name),
    input
   }))
+
+  if preview then table.insert(children, preview) end
+if progress then table.insert(children, progress) end
+
  end
  if errors then table.insert(children, HTML.FormErrors(errors)) end
  return HTML.e("form", {}, children)
@@ -1695,6 +2365,15 @@ function HTML.withDefault(val, fallback)
  return val or fallback
 end
 
+ --- create an enum object that will contain the patch types
+HTML.PatchType = {
+  UPDATE_VAR = "update-var",
+  LIST = "list",
+  OBJECT = "object",
+  NESTED = "nested",
+  GENERATOR = "generator"
+}
+
 
 --- Creates a patch object for updating a list of items on the client.
 --- Used for reactive list rendering.
@@ -1730,6 +2409,8 @@ function HTML.patch_object(selector, object, template_id)
   }
 end
 
+
+
 --- Creates a patch object for updating a nested value on the client.
 --- @param selector string CSS selector for the parent element.
 --- @param path string Dot-separated path to the nested value (e.g., "user.address.street").
@@ -1742,6 +2423,351 @@ function HTML.patch_nested(selector, path, value)
     path = path,
     value = value
   }
+end
+
+
+-- Add these missing functions to your LuaHTMLReactive.lua file
+
+--------------------------------------------------
+-- 🔄 Client State Helper Functions
+--------------------------------------------------
+
+--- Creates a client state binding element for reactive updates
+--- @param varName string The name of the client state variable
+--- @param content string|number The current value
+--- @param attrs table? Optional attributes
+--- @return VDOMNode
+function HTML.bindClientState(varName, content, attrs)
+    attrs = attrs or {}
+    attrs["data-bind-client"] = varName -- Identifier for client-side clientState querying
+    attrs.class = (attrs.class and attrs.class .. " " or "") .. "reactive-clientstate-" .. varName
+    return HTML.e("span", attrs, content)
+end
+
+--- Helper function to create shallow copy of a table (for state comparison)
+--- @param t table The table to copy
+--- @return table A shallow copy
+function HTML.shallowCopy(t)
+    if type(t) ~= "table" then return t end
+    local copy = {}
+    for k, v in pairs(t) do
+        copy[k] = v
+    end
+    return copy
+end
+
+--- Helper function to compare two values for shallow equality
+--- @param a any First value
+--- @param b any Second value
+--- @return boolean True if equal
+function HTML.shallowEqual(a, b)
+    if type(a) ~= type(b) then return false end
+    if type(a) ~= "table" then return a == b end
+    
+    for k, v in pairs(a) do
+        if b[k] ~= v then return false end
+    end
+    
+    for k, v in pairs(b) do
+        if a[k] ~= v then return false end
+    end
+    
+    return true
+end
+
+--- Enhanced setState method for components that supports clientState
+--- @param partial table A table containing state keys and new values
+--- @return PatchObject[] A list of generated patch objects
+function HTML.createEnhancedComponent(fn, initialState)
+    local comp = HTML.createComponent(fn, initialState)
+    
+    -- Enhanced setState that handles clientState patches
+    local originalSetState = comp.setState
+    comp.setState = function(partial)
+        local patches = originalSetState(partial)
+        
+        -- Add clientState specific patches if clientState keys are modified
+        for k, v in pairs(partial) do
+            if k:find("clientState") or (comp.reactiveBindings and comp.reactiveBindings[k] and k:find("client")) then
+                -- Generate clientState specific patches
+                table.insert(patches, {
+                    type = "update-var",
+                    varName = k,
+                    value = v,
+                    selector = string.format('[data-bind-client="%s"]', k),
+                    isClientState = true
+                })
+            end
+        end
+        
+        return patches
+    end
+    
+    return comp
+end
+
+--- Creates a component that can handle both normal state and clientState
+--- @param renderFn fun(state: table, props: table, clientState: table): VDOMNode The render function
+--- @param initialState table? Initial state
+--- @param initialClientState table? Initial client state
+--- @return Component
+function HTML.createDualStateComponent(renderFn, initialState, initialClientState)
+    local fullState = initialState or {}
+    fullState.clientState = initialClientState or {}
+    
+    local comp = HTML.createComponent(function(state, props)
+        -- Separate normal state from clientState for the render function
+        local normalState = {}
+        local clientState = state.clientState or {}
+        
+        for k, v in pairs(state) do
+            if k ~= "clientState" then
+                normalState[k] = v
+            end
+        end
+        
+        return renderFn(normalState, props, clientState)
+    end, fullState)
+    
+    -- Enhanced method to update clientState specifically
+    comp.setClientState = function(clientStatePartial)
+        local mergedClientState = comp.state.clientState or {}
+        for k, v in pairs(clientStatePartial) do
+            mergedClientState[k] = v
+        end
+        
+        return comp.setState({ clientState = mergedClientState })
+    end
+    
+    -- Method to get current clientState
+    comp.getClientState = function()
+        return comp.state.clientState or {}
+    end
+    
+    return comp
+end
+
+--------------------------------------------------
+-- 🔄 Enhanced Patch Generation for ClientState
+--------------------------------------------------
+
+--- Generates patches specifically for clientState changes
+--- @param clientStateChanges table Key-value pairs of clientState changes
+--- @param componentKey string The component key for namespacing
+--- @return PatchObject[]
+function HTML.generateClientStatePatches(clientStateChanges, componentKey)
+    local patches = {}
+    
+    for key, value in pairs(clientStateChanges) do
+        local fullVarName = componentKey and (componentKey .. ".clientState." .. key) or ("clientState." .. key)
+        
+        table.insert(patches, {
+            type = "update-var",
+            varName = fullVarName,
+            value = value,
+            selector = string.format('[data-bind-client="%s"]', key),
+            component = componentKey,
+            isClientState = true
+        })
+    end
+    
+    return patches
+end
+
+--- Enhanced diff function that handles clientState bindings
+function HTML.enhancedDiff(old, new, path)
+    path = path or "root"
+    local patches = HTML.diff(old, new, path)
+    
+    -- Additional logic for clientState specific attributes
+    local oldAttrs = old and old.attrs or {}
+    local newAttrs = new and new.attrs or {}
+    
+    -- Check for clientState binding changes
+    if oldAttrs["data-bind-client"] ~= newAttrs["data-bind-client"] then
+        local selector = HTML.path_to_selector(path)
+        table.insert(patches, {
+            type = "attr",
+            path = path,
+            selector = selector,
+            key = "data-bind-client",
+            value = newAttrs["data-bind-client"],
+            isClientState = true
+        })
+    end
+    
+    return patches
+end
+
+--------------------------------------------------
+-- 🔄 ClientState Aware Rendering Helpers
+--------------------------------------------------
+
+--- Renders a component with clientState context
+--- @param component Component The component to render
+--- @param props table Component props
+--- @param clientState table Current clientState
+--- @return VDOMNode
+function HTML.renderWithClientState(component, props, clientState)
+    if component.renderWithClientState then
+        return component:renderWithClientState(props, clientState)
+    else
+        -- Merge clientState into props for backward compatibility
+        local enhancedProps = props or {}
+        enhancedProps.clientState = clientState
+        return component:render(enhancedProps)
+    end
+end
+
+--- Creates a VDOM node that reacts to clientState changes
+--- @param clientStateKey string The clientState variable key
+--- @param renderFn fun(value: any): VDOMNode Function that renders based on clientState value
+--- @param attrs table? Additional attributes
+--- @return VDOMNode
+function HTML.clientStateBound(clientStateKey, renderFn, attrs)
+    attrs = attrs or {}
+    attrs["data-bind-client"] = clientStateKey
+    
+    return HTML.e("span", attrs, function()
+        -- This will be replaced with actual value during rendering
+        return renderFn(nil)
+    end)
+end
+
+--------------------------------------------------
+-- 🔄 Missing Utility Functions
+--------------------------------------------------
+
+--- Safe JSON decode with error handling
+--- @param str string JSON string to decode
+--- @return table|nil Decoded table or nil on error
+--- @return string|nil Error message
+function HTML.safeJsonDecode(str)
+    local ok, result = pcall(function()
+        return cjson.decode(str)
+    end)
+    
+    if ok then
+        return result
+    else
+        return nil, result
+    end
+end
+
+--- Deep merge two tables
+--- @param t1 table First table
+--- @param t2 table Second table
+--- @return table Merged table
+function HTML.deepMerge(t1, t2)
+    local result = {}
+    
+    for k, v in pairs(t1 or {}) do
+        result[k] = v
+    end
+    
+    for k, v in pairs(t2 or {}) do
+        if type(v) == "table" and type(result[k]) == "table" then
+            result[k] = HTML.deepMerge(result[k], v)
+        else
+            result[k] = v
+        end
+    end
+    
+    return result
+end
+
+--- Generates a unique ID for patches or elements
+--- @param prefix string Prefix for the ID
+--- @return string Unique ID
+function HTML.generateId(prefix)
+    prefix = prefix or "id"
+    return prefix .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000, 9999))
+end
+
+--------------------------------------------------
+-- 🔄 Enhanced Component Creation with ClientState Support
+--------------------------------------------------
+
+--- Creates a component with built-in clientState support
+--- @param options table Component options
+--- @field options.render fun(state: table, props: table, clientState: table): VDOMNode Render function
+--- @field options.initialState table? Initial state
+--- @field options.initialClientState table? Initial client state
+--- @field options.methods table? Component methods
+--- @field options.onClientStateChange fun(newClientState: table, oldClientState: table)? Callback when clientState changes
+--- @return Component
+function HTML.createComponentWithClientState(options)
+    local comp = HTML.createDualStateComponent(options.render, options.initialState, options.initialClientState)
+    
+    -- Store the callback
+    comp.onClientStateChange = options.onClientStateChange
+    
+    -- Enhance setClientState to trigger callback
+    local originalSetClientState = comp.setClientState
+    comp.setClientState = function(clientStatePartial)
+        local oldClientState = comp.getClientState()
+        local patches = originalSetClientState(clientStatePartial)
+        local newClientState = comp.getClientState()
+        
+        if comp.onClientStateChange then
+            comp:onClientStateChange(newClientState, oldClientState)
+        end
+        
+        return patches
+    end
+    
+    -- Add custom methods
+    if options.methods then
+        for name, method in pairs(options.methods) do
+            comp.methods[name] = method
+        end
+    end
+    
+    return comp
+end
+
+--------------------------------------------------
+-- 🔄 ClientState Specific VDOM Helpers
+--------------------------------------------------
+
+--- Creates a element that displays clientState value
+--- @param clientStateKey string The clientState variable key
+--- @param formatFn fun(value: any): string|number? Formatting function
+--- @param attrs table? Additional attributes
+--- @return VDOMNode
+function HTML.clientStateDisplay(clientStateKey, formatFn, attrs)
+    formatFn = formatFn or function(value) return tostring(value or "") end
+    
+    return HTML.bindClientState(clientStateKey, formatFn(nil), attrs)
+end
+
+--- Creates an input bound to clientState
+--- @param clientStateKey string The clientState variable key
+--- @param inputType string Input type (text, number, etc.)
+--- @param attrs table? Additional attributes
+--- @return VDOMNode
+function HTML.clientStateInput(clientStateKey, inputType, attrs)
+    attrs = attrs or {}
+    attrs.type = inputType or "text"
+    attrs["data-bind-client"] = clientStateKey
+    attrs.class = (attrs.class and attrs.class .. " " or "") .. "client-state-input"
+    
+    return HTML.e("input", attrs)
+end
+
+--- Creates a button that updates clientState
+--- @param label string Button label
+--- @param clientStateUpdate table ClientState changes to apply on click
+--- @param attrs table? Button attributes
+--- @return VDOMNode
+function HTML.clientStateButton(label, clientStateUpdate, attrs)
+    attrs = attrs or {}
+    attrs.onclick = string.format(
+        "window.__updateClientState__(%s)",
+        cjson.encode(clientStateUpdate):gsub('"', "'")
+    )
+    
+    return HTML.e("button", attrs, label)
 end
 
 
@@ -1907,8 +2933,12 @@ function HTML.App(config)
         HTML.e("link", { rel = "icon", href = "https://placehold.co/32x32/17183B/FFFBFF?text=DF", type = "image/x-icon" }),
         HTML.e("link", { href = "https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Inter:wght@400;600;700&family=Roboto:wght@400;500&family=Open+Sans:wght@400;600&family=Fira+Code:wght@400;500;600&display=swap", rel = "stylesheet" }),
         HTML.e("script", { src = "https://cdn.tailwindcss.com" }),
-        HTML.e("link", { rel = "stylesheet", href = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" })
+        HTML.e("script", { src = "https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js" }),
+        HTML.e("link", { rel = "stylesheet", href = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" }),
+        HTML.e("link", {rel = "stylesheet", href = "/static/assets/css/style.css"}),
     }
+
+    
 
     local head_elements = {}
 
@@ -1931,6 +2961,7 @@ function HTML.App(config)
     -- 4. Include the patching/hydration handler
     if config.include_patch_client ~= false then
         table.insert(head_elements, HTML.e("script", { type = "module", src = "/static/assets/js/patchClient.js" }))
+        table.insert(head_elements, HTML.e("script", { type = "module", src = "/static/assets/js/Fluid-Container.umd.min.js" }))
     end
 
     -- 6. Filters (optional JSON config for client patch filters)
@@ -1943,7 +2974,20 @@ function HTML.App(config)
         table.insert(head_elements, HTML.e("style", {}, table.concat(collected_component_css, "\n")))
     end
 
-    table.insert(head_elements, HTML.e("script", { type = "module" }, [[
+
+
+    -- 8. Extra custom head content
+    if config.head_extra then
+        if config.head_extra.children then
+            for _, child_node in ipairs(config.head_extra.children) do
+                table.insert(head_elements, child_node)
+            end
+        else
+            table.insert(head_elements, config.head_extra)
+        end
+    end
+
+        table.insert(head_elements, HTML.e("script", { type = "module" }, [[
     import {
         bindStateToDOM,
         initializeBindings
@@ -1964,17 +3008,6 @@ function HTML.App(config)
         type = "module",
         src = "/reactors/_index.js"
     }))
-
-    -- 8. Extra custom head content
-    if config.head_extra then
-        if config.head_extra.children then
-            for _, child_node in ipairs(config.head_extra.children) do
-                table.insert(head_elements, child_node)
-            end
-        else
-            table.insert(head_elements, config.head_extra)
-        end
-    end
 
     -- === BODY ===
     local final_body_children = {}

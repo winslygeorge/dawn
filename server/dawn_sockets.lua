@@ -235,23 +235,6 @@ function DawnSockets:auto_leave_idle_clients(room_timeout_seconds)
     end
 end
 
--- function DawnSockets:broadcast_to_room(topic, message_table)
---     print("Broadcasting to room:", topic, "message:", message_table)
---     local room = self.state_management:get_all_presence(topic) or {}
---     if not room then return end
-
---     if message_table then
---         message_table.id = message_table.id or uuid.v4() -- Generate a unique ID for the message
---     end
-
---     for ws_id, _ in pairs(room) do
---         if not message_table.receiver then
---            message_table.receiver = self:getSyncPrivateUserID(ws_id)
---         end
---         self:send_to_user(ws_id, message_table)
---     end
--- end
-
 function DawnSockets:broadcast_to_room(topic, message_table)
     local room = self.state_management:get_all_presence(topic) or {}
     if not room then return end

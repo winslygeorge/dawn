@@ -1,12 +1,6 @@
 -- base64.lua
 local ffi = require("ffi")
-
--- C declarations for bitwise operations (for performance)
-ffi.cdef[[
-    int32_t rshift(int32_t value, int shift);
-    int32_t band(int32_t value1, int32_t value2);
-    int32_t lshift(int32_t value, int shift);
-]]
+local bit = require("bit")
 
 local base64 = {}
 
@@ -31,12 +25,12 @@ function base64.encode(input)
         local b2 = bytes[i + 1] or 0
         local b3 = bytes[i + 2] or 0
 
-        local triple = ffi.lshift(b1, 16) + ffi.lshift(b2, 8) + b3
+        local triple = bit.lshift(b1, 16) + bit.lshift(b2, 8) + b3
 
-        table.insert(output, b64enc[ffi.band(ffi.rshift(triple, 18), 0x3F)])
-        table.insert(output, b64enc[ffi.band(ffi.rshift(triple, 12), 0x3F)])
-        table.insert(output, i + 1 <= #bytes and b64enc[ffi.band(ffi.rshift(triple, 6), 0x3F)] or "=")
-        table.insert(output, i + 2 <= #bytes and b64enc[ffi.band(triple, 0x3F)] or "=")
+        table.insert(output, b64enc[bit.band(bit.rshift(triple, 18), 0x3F)])
+        table.insert(output, b64enc[bit.band(bit.rshift(triple, 12), 0x3F)])
+        table.insert(output, i + 1 <= #bytes and b64enc[bit.band(bit.rshift(triple, 6), 0x3F)] or "=")
+        table.insert(output, i + 2 <= #bytes and b64enc[bit.band(triple, 0x3F)] or "=")
 
         i = i + 3
     end
@@ -56,9 +50,9 @@ function base64.decode(input)
             n = n + 1
             if n == 4 then
                 table.insert(output, string.char(
-                    ffi.band(ffi.rshift(t, 16), 0xFF),
-                    ffi.band(ffi.rshift(t, 8), 0xFF),
-                    ffi.band(t, 0xFF)
+                    bit.band(bit.rshift(t, 16), 0xFF),
+                    bit.band(bit.rshift(t, 8), 0xFF),
+                    bit.band(t, 0xFF)
                 ))
                 n, t = 0, 0
             end
@@ -68,13 +62,13 @@ function base64.decode(input)
     if n == 3 then
         t = t * 64
         table.insert(output, string.char(
-            ffi.band(ffi.rshift(t, 16), 0xFF),
-            ffi.band(ffi.rshift(t, 8), 0xFF)
+            bit.band(bit.rshift(t, 16), 0xFF),
+            bit.band(bit.rshift(t, 8), 0xFF)
         ))
     elseif n == 2 then
         t = t * 64 * 64
         table.insert(output, string.char(
-            ffi.band(ffi.rshift(t, 16), 0xFF)
+            bit.band(bit.rshift(t, 16), 0xFF)
         ))
     end
 

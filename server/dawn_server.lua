@@ -348,9 +348,201 @@ function DawnServer:sse_close(sse_id)
     return self.uws.sse_close(sse_id)
 end
 
+--- 🌍 Perform an outbound HTTP request (async)
+-- @param url string
+-- @param method string (default "GET")
+-- @param body string (default "")
+-- @param headers table { ["Header"] = "Value" }
+-- @param callback function(res) called with {status, body, headers, error}
+function DawnServer:http_request(url, method, body, headers, callback)
+    assert(type(url) == "string", "url must be a string")
+    assert(type(callback) == "function", "callback must be a function")
+    return self.uws.http_request(url, method or "GET", body or "", headers or {}, callback)
+end
+
+--- 🔗 Convenience GET wrapper
+function DawnServer:http_get(url, callback, headers)
+    return self:http_request(url, "GET", "", headers or {}, callback)
+end
+
+--- 🔗 Convenience POST wrapper
+function DawnServer:http_post(url, body, callback, headers)
+    return self:http_request(url, "POST", body or "", headers or {}, callback)
+end
+
+
 local function parseQuery(url)
     return extractor:extract_from_url_like_string(url)
 end
+
+
+-- 🔄 Enhanced Redirect Helper
+function DawnServer:redirect(res, location, options)
+    local opts = {}
+    
+    -- Handle different parameter formats
+    if type(options) == "number" then
+        opts.status = options
+    elseif type(options) == "table" then
+        opts = options
+    end
+    
+    -- Default values
+    opts.status = opts.status or 302
+    opts.flash = opts.flash or nil
+    opts.preserveMethod = opts.preserveMethod or false
+    
+    -- Convert status code to status line
+    local statusLine
+    if type(opts.status) == "number" then
+        local statusMap = {
+            [301] = "301 Moved Permanently",
+            [302] = "302 Found", 
+            [303] = "303 See Other",
+            [307] = "307 Temporary Redirect",
+            [308] = "308 Permanent Redirect",
+            [300] = "300 Multiple Choices",
+            [304] = "304 Not Modified"
+        }
+        statusLine = statusMap[opts.status] or tostring(opts.status) .. " Redirect"
+    else
+        statusLine = opts.status
+    end
+    
+    -- Set redirect headers
+    res:writeStatus(statusLine)
+    res:writeHeader("Location", location)
+    
+    -- Add flash message if provided (could use cookies or session)
+    if opts.flash then
+        res:writeHeader("X-Flash-Message", opts.flash)
+    end
+    
+    -- For 307/308, indicate method should be preserved
+    if opts.preserveMethod then
+        res:writeHeader("X-Redirect-Preserve-Method", "true")
+    end
+    
+    res:send('')
+    
+    self.logger:log(
+        log_level.DEBUG,
+        string.format("Redirect: %s -> %s (Status: %s, Flash: %s)", 
+            res._raw and res._raw.url or "unknown", 
+            location, 
+            statusLine,
+            opts.flash or "none"
+        ),
+        "DawnServer"
+    )
+end
+
+
+--------------------------------------------------------
+-- 📂 File Operation Helpers (wrapping C++ bindings)
+--------------------------------------------------------
+
+--- 🔹 Sync read file
+-- @param path string
+-- @return string|nil, string|nil (content, error)
+function DawnServer:read_file(path)
+    return self.uws.sync_read_file(path)
+end
+
+--- 🔹 Sync write file
+-- @param path string
+-- @param data string
+-- @return boolean, string|nil (success, error)
+function DawnServer:write_file(path, data)
+    return self.uws.sync_write_file(path, data)
+end
+
+--- 🔹 Async read file
+-- @param path string
+-- @param cb function(content, err)
+function DawnServer:async_read_file(path, cb)
+    assert(type(cb) == "function", "callback must be a function")
+    self.uws.async_read_file(path, function(content, err)
+        cb(content, err)
+    end)
+end
+
+--- 🔹 Async write file
+-- @param path string
+-- @param data string
+-- @param cb function(success, err)
+function DawnServer:async_write_file(path, data, cb)
+    assert(type(cb) == "function", "callback must be a function")
+    self.uws.async_write_file(path, data, function(success, err)
+        cb(success, err)
+    end)
+end
+
+-- function to execute async tasks
+function DawnServer:async(func, ...)
+    assert(type(func) == "function", "First argument must be a function")
+    self.uws.execute_async(func, ...)
+end
+
+--- 🔹 File exists?
+-- @param path string
+-- @return boolean
+function DawnServer:file_exists(path)
+    local f = io.open(path, "rb")
+    if f then
+        f:close()
+        return true
+    end
+    return false
+end
+
+--- 🔹 JSON helpers (if dkjson or cjson is available)
+function DawnServer:read_json(path, decode)
+    local content, err = self:read_file(path)
+    if not content then return nil, err end
+    local ok, result = pcall(decode or json.decode, content)
+    if not ok then
+        return nil, "Invalid JSON: " .. tostring(result)
+    end
+    return result, nil
+end
+
+function DawnServer:write_json(path, tbl, encode)
+    local ok, result = pcall(encode or json.encode, tbl)
+    if not ok then
+        return false, "Failed to encode JSON: " .. tostring(result)
+    end
+    return self:write_file(path, result)
+end
+
+--- 🔹 Stream read (async, chunked)
+-- Reads file in chunks and calls cb(chunk) for each piece.
+-- When error occurs: cb(nil, err)
+-- @param path string
+-- @param chunk_size integer? (default 65536)
+-- @param cb function(chunk, err)
+function DawnServer:stream_read_file(path, chunk_size, cb)
+    assert(type(cb) == "function", "callback must be a function")
+    if type(chunk_size) == "function" then
+        cb = chunk_size
+        chunk_size = nil
+    end
+    self.uws.stream_read_file(path, chunk_size or (10 * 1024), function(chunk, err)
+        cb(chunk, err)
+    end)
+end
+
+
+--- 🔹 Stream write (append mode)
+-- Useful for chunked uploads or logs
+-- @param path string
+-- @param data string
+-- @return boolean, string|nil
+function DawnServer:stream_write_file(path, data)
+    return self.uws.stream_write_file(path, data)
+end
+
+
 
 function DawnServer:printRoutes()
     self.logger:log(log_level.INFO, "Registered Routes:", "DawnServer")
@@ -359,7 +551,7 @@ function DawnServer:printRoutes()
             self.logger:log(log_level.INFO, "  " .. node.handler.method .. " " .. prefix, "DawnServer")
         end
         for path, child in pairs(node.children) do
-            local slashCount = select(2, prefix:gsub("/", ""))
+            local slashCount = select(2, prefix:gsub("/", "", 1))
             local param = child.params[slashCount + 1] or ""
             local segment = (path == ":" and "/:" .. param) or (path == "*" and "/*") or ("/" .. path)
             printNodeRoutes(child, prefix .. segment)
@@ -433,9 +625,10 @@ local function executeMiddleware(self, req, res, route, middlewares, index)
 end
 
 
+
+
 function DawnServer:run()
     print("DawnServer is starting...")
-    print("is running : ", tostring(self.running))
     if self.running then return end
     self.running = true
     -- self.uws.create_app()
@@ -450,122 +643,226 @@ function DawnServer:run()
     end
 
     local function handleRequest(_req, res, chunk, is_last)
-        local path = _req:getUrl():match("^[^?]*")
-        if path ~= "/" and path:sub(-1) == "/" then
-            path = path:sub(1, -2)
-        end
-        local method = extractHttpMethod(_req.method)
+    -- URL and path from table field (not method call)
+    local path = (_req.url or ""):match("^[^?]*")
+    if path ~= "/" and path:sub(-1) == "/" then
+        path = path:sub(1, -2)
+    end
 
-        -- Important: Before router.search, check if the request should be handled by static serving
-        -- This logic needs to be outside the route handler loop, handled by uWS itself
-        -- First check if this is a static file request
-    
-        local handler_info, params = self_ref.router:search(method, path)
-        local req = {
-            _raw = _req,
-            params = params,
-            method = method
-        }
-        self_ref.logger:log(log_level.DEBUG, string.format("Method: %s, Path: %s, Handler Found: %s, Params: %s", method, path, tostring(handler_info ~= nil), json.encode(params)), "DawnServer")
+    -- Method string is already provided
+    local method = extractHttpMethod(_req.method)
 
-        if not handleCORS(req, res) then return end
+    -- Search route
+    local handler_info, params = self_ref.router:search(method, path)
+    local req = {
+        _raw = _req,
+        params = params,
+        method = method
+    }
 
-        if handler_info then
-            local handler = handler_info
-            local query_params = parseQuery(_req.url)
-            if executeMiddleware(self_ref, req, res, path, self_ref.middlewares, 1) then
-                method = string.upper(method)
-                if method == "WS" then
-                    res:writeStatus(404):send("Not Found") -- WS handled by specific self.uws.ws callback
-                elseif method == "GET" or method == "DELETE" or method == "HEAD" or method == "OPTIONS" then
-                    -- SSE GET requests are handled by self.uws.sse directly, not through handleRequest body parsing
-                    local ok, err = pcall(function()
-                        handler(req, res, query_params)
-                    end)
-                    if not ok then
-                        self_ref.logger:log(log_level.ERROR, string.format("Error in route handler for %s %s: %s", method, path, tostring(err)), "DawnServer")
-                        local route_error_handler = self_ref.error_handlers.route[path:lower()]
-                        if type(route_error_handler) == "function" then
-                            route_error_handler(req, res, err)
-                        else
-                            res:writeHeader("Content-Type", "text/plain")
-                                :writeStatus(500)
-                                :send("Internal Server Error")
-                        end
-                    end
-                elseif method == "POST" or method == "PUT" or method == "PATCH" then
-                    local content_type = (_req:getHeader("content-type") or ""):lower()
-                    local multipart_marker = "multipart/form-data"
+    self_ref.logger:log(
+        log_level.DEBUG,
+        string.format(
+            "Method: %s, Path: %s, Handler Found: %s, Params: %s",
+            method,
+            path,
+            tostring(handler_info ~= nil),
+            json.encode(params)
+        ),
+        "DawnServer"
+    )
 
-                    if (content_type:sub(1, #multipart_marker) == multipart_marker) then
-                        req.form_data_parser = req.form_data_parser or StreamingMultipartParser.new(content_type, function(part)
-                            req.form_data = req.form_data or {}
-                            req.form_data[part.name] = part.is_file and part or part.body
-                        end, self_ref.multipart_parser_options)
+    if not handleCORS(req, res) then return end
 
-                        req.form_data_parser:feed(chunk or "")
+    if handler_info then
+        local handler = handler_info
+        -- Use snapshot .url to parse query
+        local query_params = parseQuery(_req.url or "")
 
-                        if is_last then
-                            local ok, err = pcall(handler, req, res, req.form_data)
-                            if not ok then
-                                self_ref.logger:log(log_level.ERROR, string.format("Error in multipart route handler for %s %s: %s", method, path, tostring(err)), "DawnServer")
-                                local route_error_handler = self_ref.error_handlers.route[path:lower()]
-                                if type(route_error_handler) == "function" then
-                                    route_error_handler(req, res, err)
-                                else
-                                    res:writeHeader("Content-Type", "text/plain")
-                                        :writeStatus(500)
-                                        :send("Internal Server Error")
-                                end
-                            end
-                        end
+        if executeMiddleware(self_ref, req, res, path, self_ref.middlewares, 1) then
+            method = string.upper(method)
+            if method == "WS" then
+                res:writeStatus(404):send("Not Found") -- WS handled separately
+            elseif method == "GET" or method == "DELETE" or method == "HEAD" or method == "OPTIONS" then
+                -- Normal no-body handlers
+                local ok, err = pcall(function()
+                    handler(req, res, query_params)
+                end)
+                if not ok then
+                    self_ref.logger:log(log_level.ERROR,
+                        string.format("Error in route handler for %s %s: %s", method, path, tostring(err)),
+                        "DawnServer")
+                    local route_error_handler = self_ref.error_handlers.route[path:lower()]
+                    if type(route_error_handler) == "function" then
+                        route_error_handler(req, res, err)
                     else
-                        if chunk then
-                            req.body = (req.body or "") .. chunk
-                        end
-                        if is_last then
-                            local parsed_body = nil
-                            local parse_error = nil
+                        res:writeHeader("Content-Type", "text/plain")
+                            :writeStatus(500)
+                            :send("Internal Server Error")
+                    end
+                end
 
-                            if content_type:find("application/json") then
-                                parsed_body = json.decode(req.body)
-                                if not parsed_body then
-                                    parse_error = "Failed to parse JSON body"
-                                    self_ref.logger:log(log_level.ERROR, string.format("Error parsing JSON body for %s %s: %s", method, path, parse_error), "DawnServer")
-                                end
-                            elseif content_type:find("application/x-www-form-urlencoded") then
-                                parsed_body = {}
-                                for key, value in (req.body or ""):gmatch("([^&=]+)=([^&=]*)") do
-                                    local decoded_key = decodeURIComponent(key)
-                                    local decoded_value = decodeURIComponent(value)
-                                    parsed_body[decoded_key] = decoded_value
-                                end
-                            else
-                                parsed_body = req.body
+            elseif method == "POST" or method == "PUT" or method == "PATCH" then
+           -- Access snapshot header via function
+local content_type = ((_req.getHeader and _req:getHeader("content-type")) or ""):lower()
+local multipart_marker = "multipart/form-data"
+
+if content_type:sub(1, #multipart_marker) == multipart_marker then
+    -- Multipart streaming parser path
+    req.form_data_parser = StreamingMultipartParser:new(
+        content_type,
+        function(part)
+            req.form_data = req.form_data or {}
+            
+            if part.is_file then
+                local tmp_path = string.format("/tmp/upload_%s_%s", os.time(), part.filename or "nofile")
+                local file, err = io.open(tmp_path, "wb")
+                if not file then
+                    self_ref.logger:log(
+                        log_level.ERROR,
+                        string.format("Failed to open file for writing: %s", tostring(err)),
+                        "DawnServer"
+                    )
+                    return
+                end
+
+                part.on_data = function(data)
+                    file:write(data)
+                end
+                part.on_end = function()
+                    file:close()
+                    req.form_data[part.name] = {
+                        filename = part.filename,
+                        path = tmp_path,
+                        headers = part.headers,
+                        size = part.size
+                    }
+                end
+            else
+                local chunks = {}
+                part.on_data = function(data)
+                    table.insert(chunks, data)
+                end
+                part.on_end = function()
+                    req.form_data[part.name] = table.concat(chunks)
+                end
+            end
+        end,
+        self_ref.multipart_parser_options
+    )
+
+    local is_tempfile = false
+
+    -- print("chunk : ", chunk)
+
+    -- Process the chunk (this should be inside a loop that receives chunks)
+    if type(chunk) == "string" and chunk:sub(1, 6) == "@file:" then
+        local tmp_path = chunk:sub(7) -- strip @file:
+        local f, err = io.open(tmp_path, "rb")
+        if not f then
+            self_ref.logger:log(log_level.ERROR,
+                string.format("Failed to open temp upload file: %s", tostring(err)),
+                "DawnServer")
+        else
+            is_tempfile = true
+            -- print("isfile = ", tostring(is_tempfile))
+            while true do
+                local data = f:read(8192)
+                if not data then break end
+                req.form_data_parser:feed(data)
+            end
+            f:close()
+        end
+    else
+        -- Normal in-memory body - feed the chunk to parser
+        -- print("received a normal in memory body")
+        req.form_data_parser:feed(chunk or "")
+    end
+
+    -- Only call handler when this is the last chunk
+    if is_last then
+        -- Finalize the parsing (feed boundary end if needed)
+        req.form_data_parser:feed("") -- Sometimes needed to flush final data
+
+        -- print("is last  -> ", req.form_data_parser.form_data_parsed)
+                
+        -- Call the handler with the parsed form data
+        local ok, err = pcall(handler, req, res, req.form_data_parser.form_data_parsed)
+
+        if is_tempfile then
+            local tmp_path = chunk:sub(7) -- strip @file:
+            pcall(os.remove, tmp_path) -- ✅ guaranteed cleanup with pcall for safety
+        end
+
+        if not ok then
+            self_ref.logger:log(log_level.ERROR,
+                string.format("Error in multipart handler for %s %s: %s", method, path, tostring(err)),
+                "DawnServer")
+            local route_error_handler = self_ref.error_handlers.route[path:lower()]
+            if type(route_error_handler) == "function" then
+                route_error_handler(req, res, err)
+            else
+                res:writeHeader("Content-Type", "text/plain")
+                   :writeStatus(500)
+                   :send("Internal Server Error")
+            end
+        end
+    end
+
+else
+                    -- Non-multipart
+                    if chunk then
+                        req.body = (req.body or "") .. chunk
+                    end
+                    if is_last then
+                        local parsed_body, parse_error
+
+                        if content_type:find("application/json") then
+                            parsed_body = json.decode(req.body)
+                            if not parsed_body then
+                                parse_error = "Failed to parse JSON body"
+                                self_ref.logger:log(
+                                    log_level.ERROR,
+                                    string.format("Error parsing JSON body for %s %s: %s", method, path, parse_error),
+                                    "DawnServer"
+                                )
                             end
+                        elseif content_type:find("application/x-www-form-urlencoded") then
+                            parsed_body = {}
+                            for key, value in (req.body or ""):gmatch("([^&=]+)=([^&=]*)") do
+                                local decoded_key = decodeURIComponent(key)
+                                local decoded_value = decodeURIComponent(value)
+                                parsed_body[decoded_key] = decoded_value
+                            end
+                        else
+                            parsed_body = req.body
+                        end
 
-                            local ok, err = pcall(handler, req, res, parsed_body, parse_error)
-                            if not ok then
-                                self_ref.logger:log(log_level.ERROR, string.format("Error in route handler for %s %s: %s", method, path, tostring(err)), "DawnServer")
-                                local route_error_handler = self_ref.error_handlers.route[path:lower()]
-                                if type(route_error_handler) == "function" then
-                                    route_error_handler(req, res, err)
-                                else
-                                    res:writeHeader("Content-Type", "text/plain")
-                                        :writeStatus(500)
-                                        :send("Internal Server Error")
-                                end
+                        local ok, err = pcall(handler, req, res, parsed_body, parse_error)
+                        if not ok then
+                            self_ref.logger:log(
+                                log_level.ERROR,
+                                string.format("Error in route handler for %s %s: %s", method, path, tostring(err)),
+                                "DawnServer"
+                            )
+                            local route_error_handler = self_ref.error_handlers.route[path:lower()]
+                            if type(route_error_handler) == "function" then
+                                route_error_handler(req, res, err)
+                            else
+                                res:writeHeader("Content-Type", "text/plain")
+                                    :writeStatus(500)
+                                    :send("Internal Server Error")
                             end
                         end
                     end
                 end
             end
-        else
-            -- If no specific Lua route handler is found, the C++ `serve_static` might still catch it.
-            -- If it's not caught by `serve_static`, then it's a true 404.
-            res:writeStatus(404):send("Not Found")
         end
+    else
+        -- Fallback 404
+        res:writeStatus(404):send("Not Found")
     end
+end
 
         local function get_ws_id(ws)
     if ws then
@@ -606,7 +903,6 @@ end
                     elseif event == "message" then
                         self_ref.dawn_sockets_handler:handle_message( ws, message, code)
                     elseif event == "close" then
-                        print("close ", ws)
                         self_ref.dawn_sockets_handler:handle_close( ws, code, reason)
                     end
                 end)
@@ -654,7 +950,8 @@ end
             end
         end
         for path, child in pairs(node.children) do
-            local slashCount = select(2, prefix:gsub("/", ""))
+
+            local slashCount = select(2, prefix:gsub("/", "", 1))
             local param = child.params[slashCount + 1] or ""
             local nextPrefix = prefix .. (
                 path == ":" and "/:" .. param or
@@ -676,8 +973,6 @@ end
     self.uws.listen(self.port, function(token)
         if token then
             self.logger:log(log_level.INFO, "Server started on port " .. self.port, "DawnServer")
-        else
-            self.logger:log(log_level.ERROR, "Failed to start server on port " .. self.port, "DawnServer")
         end
     end)
 
@@ -688,7 +983,7 @@ function DawnServer:restart_run()
     local self_ref = self
 
     local function handleRequest(_req, res, chunk, is_last)
-        local path = _req:getUrl():match("^[^?]*")
+    local path = (_req.url or ""):match("^[^?]*")
         if path ~= "/" and path:sub(-1) == "/" then
             path = path:sub(1, -2)
         end
@@ -807,7 +1102,6 @@ end
 
 -- Define the restart hook once
 function on_restart_register(app)
-  print("[Lua] Re-registering routes after restart...")
 
   if not restart_self then
       print("[Lua] Error: restart_self is nil, cannot re-register routes.")

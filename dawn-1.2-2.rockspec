@@ -1,5 +1,5 @@
 package = "dawn"
-version = "1.2-1"
+version = "1.2-2"
 
 source = {
    url = "https://github.com/winslygeorge/dawn/archive/master.zip",
@@ -73,7 +73,9 @@ build = {
          ["runtime.scheduler"]                        = "build/dawn/runtime/scheduler.lua",
          ["runtime.loop"]                             = "build/dawn/runtime/loop.lua",
          ["utils.uuid"]                               = "build/dawn/utils/uuid.lua",
-         ["utils.DawnWatcher"]                        = "build/dawn/utils/DawnWatcher.lua"
+         ["utils.DawnWatcher"]                        = "build/dawn/utils/DawnWatcher.lua",
+         ["utils.try"]                                = "build/dawn/utils/try.lua",
+         ["utils.HTML_Parser"]                        = "build/dawn/utils/HTML_Parser.lua"
       }
    }
 }

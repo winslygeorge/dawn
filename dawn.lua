@@ -50,4 +50,6 @@ return {
   queue = require("utils.queue"),
   set = require("utils.set"),
   uuid = require("utils.uuid"),
+  try = require("utils.try"),
+  html_parser = require("utils.HTML_parser"),
 }
