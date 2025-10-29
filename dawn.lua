@@ -51,5 +51,5 @@ return {
   set = require("utils.set"),
   uuid = require("utils.uuid"),
   try = require("utils.try"),
-  html_parser = require("utils.HTML_parser"),
+  HTML_Parser = require("utils.HTML_Parser"),
 }
