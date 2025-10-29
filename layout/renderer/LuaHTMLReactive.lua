@@ -2922,7 +2922,7 @@ end
 --- @field config.children VDOMNode|VDOMNode[]? The root VDOM node(s) of the application, to be placed in the body.
 --- @return VDOMNode The full VDOM tree for a reactive HTML application, ready for rendering to a string.
 function HTML.App(config)
-    local cjson = require("cjson")
+    local cjson = require("dkjson")
     local state = config.state or {}
     local filters = config.filters
     local collected_component_css = config.component_css or {}
