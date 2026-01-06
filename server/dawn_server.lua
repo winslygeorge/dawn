@@ -39,7 +39,7 @@ local TrieNode = {}
 function TrieNode:new(logger)
     local self = setmetatable({}, { __index = TrieNode })
     self.children = {}
-    self.handler = nil
+    self.handlers = {}  -- Change from single handler to table of handlers by method
     self.isEndOfPath = false
     self.params = {}
     self.log = logger
@@ -72,11 +72,15 @@ function TrieNode:insert(method, route, handler)
         end
     end
 
-    if node.isEndOfPath and node.handler then
-        self.log:log(log_level.WARN, string.format("Route conflict: %s %s is being overridden.", method, route), "DawnServer")
+    -- ✅ FIX: Store multiple handlers by method
+    if node.handlers[method] then
+        print(log_level.WARN, string.format("Route conflict: %s %s is being overridden.", method, route), "DawnServer")
     end
+    
     node.isEndOfPath = true
-    node.handler = { method = method, func = handler }
+    node.handlers[method] = handler  -- Store handler by method
+    
+    self.log:log(log_level.DEBUG, string.format("Registered route: %s %s", method, route), "DawnServer")
 end
 
 function TrieNode:search(method, path)
@@ -96,7 +100,7 @@ function TrieNode:search(method, path)
                 child = node.children["*"]
                 if child then
                     params.splat = table.concat(parts, "/", i)
-                    return child.handler and child.handler.func, params
+                    return child.handlers[method] and child.handlers[method], params
                 else
                     return nil, {}
                 end
@@ -113,10 +117,11 @@ function TrieNode:search(method, path)
         end
     end
 
-    if node and node.isEndOfPath and node.handler and node.handler.method == method then
-        return node.handler.func, params
+    -- ✅ FIX: Look for handler by specific method
+    if node and node.isEndOfPath and node.handlers[method] then
+        return node.handlers[method], params
     else
-        print("  Handler not found at end of path.")
+        self.log:log(log_level.DEBUG, string.format("Handler not found for method %s at path %s", method, path), "DawnServer")
         return nil, {}
     end
 end
@@ -370,6 +375,27 @@ function DawnServer:http_post(url, body, callback, headers)
     return self:http_request(url, "POST", body or "", headers or {}, callback)
 end
 
+-- Convenience PUT wrapper
+function DawnServer:http_put(url, body, callback, headers)
+    return self:http_request(url, "PUT", body or "", headers or {}, callback)
+end
+-- Convenience DELETE wrapper
+function DawnServer:http_delete(url, callback, headers)
+    return self:http_request(url, "DELETE", "", headers or {}, callback)
+end
+-- Convenience PATCH wrapper
+function DawnServer:http_patch(url, body, callback, headers)
+    return self:http_request(url, "PATCH", body or "", headers or {}, callback)
+end
+-- Convenience HEAD wrapper
+function DawnServer:http_head(url, callback, headers)
+    return self:http_request(url, "HEAD", "", headers or {}, callback)
+end
+-- Convenience OPTIONS wrapper
+function DawnServer:http_options(url, callback, headers)
+    return self:http_request(url, "OPTIONS", "", headers or {}, callback)
+end
+
 
 local function parseQuery(url)
     return extractor:extract_from_url_like_string(url)
@@ -547,8 +573,10 @@ end
 function DawnServer:printRoutes()
     self.logger:log(log_level.INFO, "Registered Routes:", "DawnServer")
     local function printNodeRoutes(node, prefix)
-        if node.handler then
-            self.logger:log(log_level.INFO, "  " .. node.handler.method .. " " .. prefix, "DawnServer")
+        if node.handlers and next(node.handlers) then
+            for method, handler in pairs(node.handlers) do
+                self.logger:log(log_level.INFO, "  " .. method:upper() .. " " .. prefix, "DawnServer")
+            end
         end
         for path, child in pairs(node.children) do
             local slashCount = select(2, prefix:gsub("/", "", 1))
@@ -677,7 +705,7 @@ function DawnServer:run()
     if handler_info then
         local handler = handler_info
         -- Use snapshot .url to parse query
-        local query_params = parseQuery(_req.url or "")
+        local query_params = parseQuery("?"..(_req.query or ""))
 
         if executeMiddleware(self_ref, req, res, path, self_ref.middlewares, 1) then
             method = string.upper(method)
@@ -705,6 +733,7 @@ function DawnServer:run()
             elseif method == "POST" or method == "PUT" or method == "PATCH" then
            -- Access snapshot header via function
 local content_type = ((_req.getHeader and _req:getHeader("content-type")) or ""):lower()
+
 local multipart_marker = "multipart/form-data"
 
 if content_type:sub(1, #multipart_marker) == multipart_marker then
@@ -827,17 +856,19 @@ else
                                     "DawnServer"
                                 )
                             end
-                        elseif content_type:find("application/x-www-form-urlencoded") then
+                        elseif content_type:lower():find("application/x-www-form-urlencoded", 1, true) then
+
                             parsed_body = {}
                             for key, value in (req.body or ""):gmatch("([^&=]+)=([^&=]*)") do
                                 local decoded_key = decodeURIComponent(key)
                                 local decoded_value = decodeURIComponent(value)
                                 parsed_body[decoded_key] = decoded_value
                             end
+
                         else
+                
                             parsed_body = req.body
                         end
-
                         local ok, err = pcall(handler, req, res, parsed_body, parse_error)
                         if not ok then
                             self_ref.logger:log(
@@ -845,7 +876,7 @@ else
                                 string.format("Error in route handler for %s %s: %s", method, path, tostring(err)),
                                 "DawnServer"
                             )
-                            local route_error_handler = self_ref.error_handlers.route[path:lower()]
+                            local rouzte_error_handler = self_ref.error_handlers.route[path:lower()]
                             if type(route_error_handler) == "function" then
                                 route_error_handler(req, res, err)
                             else
@@ -873,12 +904,20 @@ end
         return nil
     end
 end
-
-    local function registerRouteHandlers(node, prefix)
-        if node.handler then
-            local method = node.handler.method:lower()
+local function registerRouteHandlers(node, prefix)
+    -- ✅ FIX: Check if there are any handlers (multiple methods possible)
+    if node.handlers and next(node.handlers) then
+        -- ✅ FIX: Iterate through ALL methods for this path
+        for method, handler_func in pairs(node.handlers) do
             local routePath = prefix
-            if method == "ws" then
+            local method_lower = method:lower()
+            
+            print(log_level.DEBUG, 
+                string.format("📝 Registering route: %s %s", method:upper(), routePath), 
+                "RouteRegistration"
+            )
+            
+            if method_lower == "ws" then
                 self.uws.ws(routePath, function(ws, event, message, code, reason)
                     if event == "open" then
                         local fake_req = {
@@ -906,7 +945,7 @@ end
                         self_ref.dawn_sockets_handler:handle_close( ws, code, reason)
                     end
                 end)
-            elseif method == "get" or method == "delete" or method == "head" or method == "options" then
+            elseif method_lower == "get" or method_lower == "delete" or method_lower == "head" or method_lower == "options" then
 
                -- check if routePath contains '/sse/' to handle SSE
                 if routePath:find("/sse/") then
@@ -925,12 +964,11 @@ end
                         end
                         local ok = executeMiddleware(self_ref, fake_req, fake_res, routePath, self_ref.middlewares, 1)
                         if ok then
-                            local handler_info, params = self_ref.router:search(method, routePath)
+                            local handler_info, params = self_ref.router:search(method_lower, routePath)
                             pcall(function()
                                 if handler_info then
-                                    local handler = handler_info
-                                    local query_params = parseQuery(req.url)
-                                    handler(fake_req, fake_res, query_params)
+                                    local query_params = parseQuery("?"..(req.query or ""))
+                                    handler_func(fake_req, fake_res, query_params)  -- ✅ Use the actual handler
                                 else
                                     -- If no specific SSE handler is found, send a default message
                                     self.uws.sse_send(sse_id, "Default SSE message", "default")
@@ -943,23 +981,24 @@ end
                         end
                     end)
                 else
-                    self.uws[method](routePath, handleRequest)
+                    self.uws[method_lower](routePath, handleRequest)
                 end
-            elseif method == "post" or method == "put" or method == "patch" then
-                self.uws[method](routePath, handleRequest)
+            elseif method_lower == "post" or method_lower == "put" or method_lower == "patch" then
+                self.uws[method_lower](routePath, handleRequest)
             end
         end
-        for path, child in pairs(node.children) do
-
-            local slashCount = select(2, prefix:gsub("/", "", 1))
-            local param = child.params[slashCount + 1] or ""
-            local nextPrefix = prefix .. (
-                path == ":" and "/:" .. param or
-                (path == "*" and "/*" or "/" .. path)
-            )
-            registerRouteHandlers(child, nextPrefix)
-        end
     end
+    
+    for path, child in pairs(node.children) do
+        local slashCount = select(2, prefix:gsub("/", "", 1))
+        local param = child.params[slashCount + 1] or ""
+        local nextPrefix = prefix .. (
+            path == ":" and "/:" .. param or
+            (path == "*" and "/*" or "/" .. path)
+        )
+        registerRouteHandlers(child, nextPrefix)
+    end
+end
     registerRouteHandlers(self.router, "")
 
     -- Register static file serving using the new self.uws.serve_static function
@@ -1006,7 +1045,7 @@ function DawnServer:restart_run()
 
         if handler_info then
             local handler = handler_info
-            local query_params = parseQuery(_req.url)
+            local query_params = parseQuery("?"..(_req.query or ""))
             if executeMiddleware(self_ref, req, res, path, self_ref.middlewares, 1) then
                 local ok, err = pcall(handler, req, res, query_params)
                 if not ok then
@@ -1049,7 +1088,7 @@ function DawnServer:restart_run()
                         if ok then
                             local handler_info = self_ref.router:search(method, routePath)
                             if handler_info then
-                                handler_info(req, {}, parseQuery(req.url))
+                                handler_info(req, {}, parseQuery("?"..(req.query or "")))
                             else
                                 self.uws.sse_send(sse_id, "Default SSE message", "default")
                                 self.uws.sse_close(sse_id)

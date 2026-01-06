@@ -1,5 +1,6 @@
 -- HTMLReactive.lua
 -- ✅ Reactive HTML Builder with SSR, Patch, Forms, Layouts, Slots, Widgets, and Validation
+-- ✅ UPDATED: Added missing functions for FuncComponent integration
 
 ---@diagnostic disable: lowercase-global
 
@@ -105,19 +106,30 @@ local schema_registry = {}
 --- @param attrs table? A table of key-value pairs representing HTML attributes.
 --- @param children string|number|VDOMNode|VDOMNode[]? The content of the element.
 --- @return VDOMNode A VDOM node table.
+--- Creates a Virtual DOM (VDOM) node with enforced stable identity.
+--- @param tag string The HTML tag name (e.g., "div", "span", "h1").
+--- @param attrs table? A table of key-value pairs representing HTML attributes.
+--- @param children string|number|VDOMNode|VDOMNode[]? The content of the element.
+--- @return VDOMNode A VDOM node table.
 function HTML.e(tag, attrs, children)
- local node = { tag = tag, attrs = attrs or {} }
- if type(children) == "string" or type(children) == "number" then
-  node.content = tostring(children)
- elseif type(children) == "table" then
-  -- Ensure children is always a flat list of nodes, not a nested fragment
-  if children.tag == nil and children.children then -- It's an HTML.fragment
-      node.children = children.children
-  else
-      node.children = children
-  end
- end
- return node
+    -- ✅ Fix 1: Enforce stable node identity (data-node-id)
+    attrs = attrs or {}
+    if not attrs["data-node-id"] then
+        attrs["data-node-id"] = HTML.uid()
+    end
+    
+    local node = { tag = tag, attrs = attrs or {} }
+    if type(children) == "string" or type(children) == "number" then
+        node.content = tostring(children)
+    elseif type(children) == "table" then
+        -- Ensure children is always a flat list of nodes, not a nested fragment
+        if children.tag == nil and children.children then -- It's an HTML.fragment
+            node.children = children.children
+        else
+            node.children = children
+        end
+    end
+    return node
 end
 
 --- Creates a VDOM fragment, a special node with no tag.
@@ -150,6 +162,140 @@ end
 
 
 --------------------------------------------------
+-- 🔄 Patch Versioning & Unique ID System
+--------------------------------------------------
+local PATCH_VERSION = 0
+local UNIQUE_ID_COUNTER = 0
+
+function HTML.nextVersion()
+    PATCH_VERSION = PATCH_VERSION + 1
+    return PATCH_VERSION
+end
+
+function HTML.uid()
+    -- Generate unique ID with timestamp and counter
+    UNIQUE_ID_COUNTER = UNIQUE_ID_COUNTER + 1
+    return "n" .. tostring(os.time()) .. "_" .. UNIQUE_ID_COUNTER .. "_" .. tostring(math.random(10000, 99999))
+end
+
+--- Helper function to ensure a node has a stable ID
+--- @param props table? The attributes table
+--- @return table The attributes table with data-node-id
+local function ensureNodeId(props)
+    props = props or {}
+    if not props["data-node-id"] then
+        props["data-node-id"] = HTML.uid()
+    end
+    return props
+end
+
+--- Helper function to generate patch envelope
+--- @param componentId string The component identifier
+--- @param patches table[] The list of patch operations
+--- @param prevState table? Previous component state
+--- @param nextState table? Next component state
+--- @return table Patch envelope
+local function createPatchEnvelope(componentId, patches, prevState, nextState)
+    return {
+        version = HTML.nextVersion(),
+        componentId = componentId,
+        state = {
+            prev = prevState or {},
+            next = nextState or {}
+        },
+        ops = patches
+    }
+end
+
+
+--- Internal recursive diff function with stable ID targeting
+--- @param old VDOMNode? The previous VDOM tree.
+--- @param new VDOMNode? The new VDOM tree.
+--- @param path string? Internal path tracking.
+--- @return table[] A table of patch objects.
+local function diff_internal(old, new, path)
+    path = path or "root"
+    local patches = {}
+
+    -- Retrieve stable ID for targeting
+    local target_id = (new and new.attrs and new.attrs["data-node-id"])
+                   or (old and old.attrs and old.attrs["data-node-id"])
+
+    if not target_id then
+        -- Fallback to path-based ID for root or unexpected cases
+        target_id = "root_" .. path:gsub("[%.%[%]]", "_")
+    end
+
+    if not old and new then
+        -- New node insertion
+        table.insert(patches, { 
+            op = "insert", 
+            target = target_id, 
+            html = HTML.render(new, { pretty = false })
+        })
+        return patches
+    elseif not new then
+        -- Node removal
+        table.insert(patches, { op = "remove", target = target_id })
+        return patches
+    elseif old.tag ~= new.tag then
+        -- Full node replacement
+        table.insert(patches, { 
+            op = "replace", 
+            target = target_id, 
+            html = HTML.render(new, { pretty = false })
+        })
+        return patches
+    end
+
+    local old_attrs = old.attrs or {}
+    local new_attrs = new.attrs or {}
+
+    -- Attribute changes
+    for k, v in pairs(new_attrs) do
+        if old_attrs[k] ~= v then
+            table.insert(patches, { 
+                op = "attr", 
+                target = target_id, 
+                name = k, 
+                value = v 
+            })
+        end
+    end
+
+    for k in pairs(old_attrs) do
+        if new_attrs[k] == nil then
+            table.insert(patches, { 
+                op = "remove-attr", 
+                target = target_id, 
+                name = k 
+            })
+        end
+    end
+
+    -- Text content change
+    if old.content ~= new.content then
+        table.insert(patches, { 
+            op = "text", 
+            target = target_id, 
+            value = new.content 
+        })
+    end
+
+    -- Recurse for children
+    local oc, nc = old.children or {}, new.children or {}
+    for i = 1, math.max(#oc, #nc) do
+        local childPatches = diff_internal(oc[i], nc[i], path .. ".children[" .. i .. "]")
+        for _, p in ipairs(childPatches) do
+            table.insert(patches, p)
+        end
+    end
+
+    return patches
+end
+
+
+--------------------------------------------------
 -- 🔄 Diff Engine
 --------------------------------------------------
 --- Converts a VDOM path to a CSS selector for client-side querying.
@@ -163,53 +309,26 @@ local function path_to_selector(path)
   return selector
 end
 
---- Compares two VDOM trees and generates a list of "patch" objects.
---- These patches describe the minimal changes needed to transform the `old` VDOM into the `new` VDOM.
+--- Compares two VDOM trees and generates patch operations.
 --- @param old VDOMNode? The previous VDOM tree.
 --- @param new VDOMNode? The new VDOM tree.
---- @param path string? Internal parameter used to track the path of the current node in the tree. Defaults to "root".
---- @return PatchObject[] A table of patch objects.
-function HTML.diff(old, new, path)
-  path = path or "root"
-  local selector = path_to_selector(path)
-  local patches = {}
-
-  if not old and new then
-    return { { type = "replace", path = path, selector = selector, new = new } }
-  elseif not new then
-    return { { type = "remove", path = path, selector = selector } }
-  elseif old.tag ~= new.tag then
-    return { { type = "replace", path = path, selector = selector, new = new } }
-  end
-
-  local old_attrs = old.attrs or {}
-  local new_attrs = new.attrs or {}
-
-  for k, v in pairs(new_attrs) do
-    if old_attrs[k] ~= v then
-      table.insert(patches, { type = "attr", path = path, selector = selector, key = k, value = v })
+--- @param ctx table? Context containing { prevState, nextState, componentId }.
+--- @return table A patch envelope or raw patches.
+function HTML.diff(old, new, ctx)
+    ctx = ctx or {}
+    local patches = diff_internal(old, new, "root")
+    
+    -- ✅ Fix 2 & 3: Return versioned patch envelope if component context provided
+    if ctx.componentId then
+        return createPatchEnvelope(
+            ctx.componentId, 
+            patches, 
+            ctx.prevState, 
+            ctx.nextState
+        )
+    else
+        return patches -- Return raw patches if no component context
     end
-  end
-
-  for k in pairs(old_attrs) do
-    if new_attrs[k] == nil then
-      table.insert(patches, { type = "remove-attr", path = path, selector = selector, key = k })
-    end
-  end
-
-  if old.content ~= new.content then
-    table.insert(patches, { type = "text", path = path, selector = selector, content = new.content })
-  end
-
-  local oc, nc = old.children or {}, new.children or {}
-  for i = 1, math.max(#oc, #nc) do
-    local childPatches = HTML.diff(oc[i], nc[i], path .. ".children[" .. i .. "]")
-    for _, p in ipairs(childPatches) do
-      table.insert(patches, p)
-    end
-  end
-
-  return patches
 end
 
 
@@ -1165,25 +1284,23 @@ local selfClosingTags = {
     track = true, wbr = true
 }
 
---- Renders a VDOM tree into a static HTML string. Primarily used for Server-Side Rendering (SSR).
+--- Renders a VDOM tree into a static HTML string.
 --- @param vdom VDOMNode The VDOM node or fragment to render.
 --- @param opts table? A table of options.
---- @field opts.pretty boolean? If true, the output is formatted with indentation and newlines. Defaults to false.
---- @field opts.indent string? The string to use for indentation. Defaults to "  ".
 --- @return string A string containing the HTML markup.
 function HTML.render(vdom, opts)
     opts = opts or {}
     local pretty = opts.pretty or false
     local indentStr = opts.indent or "  "
-
+    
     local function renderNode(node, depth)
         depth = depth or 0
         local pad = pretty and (indentStr):rep(depth) or ""
-
+        
         if type(node) == "string" or type(node) == "number" then
             return pad .. node .. (pretty and "\n" or "")
         end
-
+        
         if not node.tag then
             local content = ""
             if node.children then
@@ -1193,11 +1310,11 @@ function HTML.render(vdom, opts)
             end
             return content
         end
-
+        
         local tag = node.tag
         local attrs = node.attrs or {}
         local attrString = ""
-
+        
         for k, v in pairs(attrs) do
             if v ~= false then
                 if type(v) == "table" and v._handler then
@@ -1215,15 +1332,16 @@ function HTML.render(vdom, opts)
                 elseif type(v) == "table" and (v._op or v._ops) then
                     attrString = attrString .. " " .. k .. "=\'window.__clientOp__(" .. cjson.encode(v) .. ")\'"
                 else
+                    -- ✅ Preserve data-node-id in rendered HTML
                     attrString = attrString .. " " .. k .. (v == true and "" or ("=\"" .. tostring(v) .. "\""))
                 end
             end
         end
-
+        
         if selfClosingTags[tag] and not node.children and not node.content then
             return pad .. "<" .. tag .. attrString .. ">" .. (pretty and "\n" or "")
         end
-
+        
         local content = ""
         if node.content then
             content = node.content
@@ -1232,22 +1350,24 @@ function HTML.render(vdom, opts)
                 content = content .. renderNode(child, depth + 1)
             end
         end
-
+        
         local open = pad .. "<" .. tag .. attrString .. ">"
         local close = "</" .. tag .. ">" .. (pretty and "\n" or "")
-
+        
         if pretty and content:match("[^%s]") then
             return open .. "\n" .. content .. pad .. close
         else
             return open .. content .. close
         end
     end
-
+    
     return renderNode(vdom)
 end
 
 
--- In LuaHTMLReactive.lua, add these functions
+--------------------------------------------------
+-- 🔄 Enhanced Component System Functions (ADDED)
+--------------------------------------------------
 
 --- Creates a component placeholder that will be replaced with the component's rendered content
 --- @param component_key string The key of the component to embed
@@ -1262,50 +1382,217 @@ function HTML.Component(component_key, props)
         tag = "div",
         attrs = {
             ["data-component"] = component_key,
-            class = "embedded-component",
-            ["data-parent-key"] = props and props.parentComponentKey or ""
+            class = "component-placeholder",
+            ["data-props"] = cjson.encode(props or {})
         },
-        children = { HTML.e("div", { class = "component-loading" }, "Loading...") }
+        children = { 
+            HTML.e("div", { 
+                class = "component-loading",
+                style = "padding: 20px; text-align: center; color: #666;"
+            }, "Loading component...") 
+        }
+    }
+end
+
+--- Creates a reactive component for use with FuncComponent
+--- @param renderFn fun(state: table, props: table, clientState: table): VDOMNode
+--- @param initialState table? Initial state
+--- @param initialClientState table? Initial client state
+--- @return Component
+function HTML.createReactiveComponent(renderFn, initialState, initialClientState)
+    local fullState = initialState or {}
+    fullState.clientState = initialClientState or {}
+    
+    local comp = HTML.createComponent(function(state, props)
+        -- Separate normal state from clientState
+        local normalState = {}
+        local clientState = state.clientState or {}
+        
+        for k, v in pairs(state) do
+            if k ~= "clientState" then
+                normalState[k] = v
+            end
+        end
+        
+        return renderFn(normalState, props, clientState)
+    end, fullState)
+    
+    -- Store reactive elements for quick updates
+    comp._reactiveElements = {}
+    
+    return comp
+end
+
+--- Registers a reactive element binding
+--- @param component Component
+--- @param key string State key
+--- @param selector string CSS selector
+function HTML.registerReactiveElement(component, key, selector)
+    component._reactiveElements = component._reactiveElements or {}
+    component._reactiveElements[key] = selector
+end
+
+--- Helper for deep equality comparison (used in FuncComponent)
+--- @param a any First value
+--- @param b any Second value
+--- @return boolean True if deeply equal
+function HTML.deepEqual(a, b)
+    if type(a) ~= type(b) then return false end
+    if type(a) ~= "table" then return a == b end
+    
+    local visited = {}
+    local function compare(t1, t2)
+        if visited[t1] and visited[t1] == t2 then return true end
+        visited[t1] = t2
+        
+        local count1, count2 = 0, 0
+        for k, v in pairs(t1) do
+            count1 = count1 + 1
+            if not compare(v, t2[k]) then return false end
+        end
+        print(require("cjson").encode(t2))
+        for _ in pairs(t2) do
+            count2 = count2 + 1
+        end
+        
+        return count1 == count2
+    end
+    
+    return compare(a, b)
+end
+
+--- Enhanced component creation with clientState support
+--- @param options table Component options
+--- @field options.render fun(state: table, props: table, clientState: table): VDOMNode
+--- @field options.initialState table?
+--- @field options.initialClientState table?
+--- @field options.methods table?
+--- @return Component
+function HTML.createComponentEx(options)
+    local comp = HTML.createReactiveComponent(
+        options.render,
+        options.initialState,
+        options.initialClientState
+    )
+    
+    -- Add methods if provided
+    if options.methods then
+        comp.methods = options.methods
+    end
+    
+    -- Enhanced setState that handles both state and clientState
+    comp.setStateEx = function(self, updates, isClientState)
+        if isClientState then
+            local clientState = self.state.clientState or {}
+            for k, v in pairs(updates) do
+                clientState[k] = v
+            end
+            self.state.clientState = clientState
+            
+            -- Generate clientState patches
+            local patches = {}
+            for k, v in pairs(updates) do
+                table.insert(patches, {
+                    type = "update-var",
+                    varName = "clientState." .. k,
+                    value = v,
+                    isClientState = true
+                })
+            end
+            return patches
+        else
+            return self.setState(updates)
+        end
+    end
+    
+    return comp
+end
+
+--- Creates a component wrapper element
+--- @param component Component The component instance
+--- @param props table Component props
+--- @return VDOMNode
+function HTML.ComponentWrapper(component, props)
+    return {
+        _component = true,
+        component = component,
+        props = props or {},
+        tag = "div",
+        attrs = {
+            ["data-component"] = component.component_key or "unknown",
+            class = "component-wrapper"
+        }
     }
 end
 
 --------------------------------------------------
 -- 🌐 Patch JS Output
 --------------------------------------------------
---- Converts a single patch object into a JavaScript snippet that performs the described change on the client's DOM.
---- @param patch PatchObject A single patch object.
+--- Converts a single patch object into a JavaScript snippet.
+--- @param patch table A single patch object.
 --- @return string A string of JavaScript code.
 function HTML.generate_js_patch(patch)
- local path = patch.path or "root"
- local selector = patch.selector or path:gsub("%.children%[", " > *:nth-child("):gsub("%]", ")")
- if patch.type == "attr" then
-  return string.format('document.querySelector("%s").setAttribute("%s", "%s");', selector, patch.key, patch.value)
- elseif patch.type == "remove-attr" then
-  return string.format('document.querySelector("%s").removeAttribute("%s");', selector, patch.key)
- elseif patch.type == "text" then
-  -- For text patches, we might want to skip if it's a reactive-var span,
-  -- as update-var will handle it. This logic is better on client-side.
-  return string.format('document.querySelector("%s").textContent = "%s";', selector, patch.content)
- elseif patch.type == "replace" then
-  local html = HTML.render(patch.new):gsub('"', '\\"')
-  return string.format('document.querySelector("%s").outerHTML = "%s";', selector, html)
- elseif patch.type == "remove" then
-  return string.format('document.querySelector("%s").remove();', selector)
- elseif patch.type == "update-var" then
-  -- New patch type for variable updates
-  -- This will call a client-side function `__updateReactiveVar__`
-  return string.format('window.__updateReactiveVar__("%s", %s);',
-             patch.varName, cjson.encode(patch.value)) -- Encode value for safety
- end
+    if patch.op == "attr" then
+        return string.format(
+            'window.applyPatch({op: "attr", target: "%s", name: "%s", value: "%s"});',
+            patch.target, patch.name, patch.value
+        )
+    elseif patch.op == "remove-attr" then
+        return string.format(
+            'window.applyPatch({op: "remove-attr", target: "%s", name: "%s"});',
+            patch.target, patch.name
+        )
+    elseif patch.op == "text" then
+        return string.format(
+            'window.applyPatch({op: "text", target: "%s", value: "%s"});',
+            patch.target, patch.content or patch.value
+        )
+    elseif patch.op == "replace" then
+        local html = HTML.render(patch.new):gsub('"', '\\"')
+        return string.format(
+            'window.applyPatch({op: "replace", target: "%s", html: "%s"});',
+            patch.target, html
+        )
+    elseif patch.op == "remove" then
+        return string.format(
+            'window.applyPatch({op: "remove", target: "%s"});',
+            patch.target
+        )
+    elseif patch.op == "insert" then
+        local html = HTML.render(patch.new):gsub('"', '\\"')
+        return string.format(
+            'window.applyPatch({op: "insert", target: "%s", html: "%s", position: "%s"});',
+            patch.target, html, patch.position or "beforeend"
+        )
+    elseif patch.op == "update-var" then
+        return string.format(
+            'window.__updateReactiveVar__("%s", %s);',
+            patch.varName, cjson.encode(patch.value)
+        )
+    end
+    return ""
 end
 
---- Takes a list of patch objects and concatenates their JavaScript code into a single string.
---- @param patches PatchObject[] A list of patch objects.
+--- Takes a patch list or envelope and converts to JavaScript.
+--- @param patches table|table[] A patch envelope or list of patch objects.
 --- @return string A string of concatenated JavaScript code.
 function HTML.toJS(patches)
- local js = {}
- for _, p in ipairs(patches) do table.insert(js, HTML.generate_js_patch(p)) end
- return table.concat(js, "\n")
+    local js = {}
+    
+    -- Handle patch envelope
+    if patches.version and patches.componentId then
+        table.insert(js, string.format(
+            'window.applyPatchEnvelope(%s);',
+            cjson.encode(patches)
+        ))
+    else
+        -- Handle raw patches
+        for _, p in ipairs(patches) do 
+            table.insert(js, HTML.generate_js_patch(p)) 
+        end
+    end
+    
+    return table.concat(js, "\n")
 end
 
 --------------------------------------------------
@@ -1376,7 +1663,6 @@ function HTML.tailwindify(attrs, classes)
   attrs.class = ((attrs.class or "") .. " " .. (classes or "")):gsub("^%s+", ""):gsub("%s+$", "")
   return attrs
 end
-
 
 
 
@@ -1787,7 +2073,7 @@ end
 ---   The fill color for the curved area (CSS color format, e.g. `"#3498db"` or `"red"`).  
 ---   ⚡ Affects the background appearance of the curve.  
 ---   Internally, the component also generates a darker shade of this color
----   for the curve’s shadow.
+---   for the curve's shadow.
 ---
 --- @param precision integer|nil
 ---   The number of points used to sample the equation when generating the curve path.  
@@ -2475,35 +2761,163 @@ function HTML.shallowEqual(a, b)
     return true
 end
 
---- Enhanced setState method for components that supports clientState
+--- Enhanced setState method for components that supports clientState AND general state reactive updates
+--- Patches reactively bound state variables using 'update-var' instead of VDOM diff.
 --- @param partial table A table containing state keys and new values
 --- @return PatchObject[] A list of generated patch objects
+--- Creates an enhanced component with granular state methods
 function HTML.createEnhancedComponent(fn, initialState)
-    local comp = HTML.createComponent(fn, initialState)
+  local comp = HTML.createComponent(fn, initialState)
+  
+  -- Add granular list operations
+  comp.methods = comp.methods or {}
+  
+  --- Add item to a list
+  function comp.methods:addToList(listKey, item)
+    local list = self.state[listKey] or {}
+    table.insert(list, item)
     
-    -- Enhanced setState that handles clientState patches
-    local originalSetState = comp.setState
-    comp.setState = function(partial)
-        local patches = originalSetState(partial)
-        
-        -- Add clientState specific patches if clientState keys are modified
-        for k, v in pairs(partial) do
-            if k:find("clientState") or (comp.reactiveBindings and comp.reactiveBindings[k] and k:find("client")) then
-                -- Generate clientState specific patches
-                table.insert(patches, {
-                    type = "update-var",
-                    varName = k,
-                    value = v,
-                    selector = string.format('[data-bind-client="%s"]', k),
-                    isClientState = true
-                })
-            end
-        end
-        
-        return patches
+    return {
+      HTML.generateListPatch(listKey, "add", list, {index = #list, item = item})
+    }
+  end
+  
+  --- Update item in a list
+  function comp.methods:updateInList(listKey, index, item)
+    local list = self.state[listKey] or {}
+    if list[index] then
+      list[index] = item
+      return {
+        HTML.generateListPatch(listKey, "update", list, {index = index, item = item})
+      }
+    end
+    return {}
+  end
+  
+  --- Remove item from a list
+  function comp.methods:removeFromList(listKey, index)
+    local list = self.state[listKey] or {}
+    if list[index] then
+      table.remove(list, index)
+      return {
+        HTML.generateListPatch(listKey, "delete", list, {index = index})
+      }
+    end
+    return {}
+  end
+  
+  --- Update specific property in an object
+  function comp.methods:updateObject(objectKey, property, value)
+    local obj = self.state[objectKey] or {}
+    obj[property] = value
+    
+    return {
+      HTML.generateObjectPatch(objectKey, obj)
+    }
+  end
+  
+  return comp
+end
+
+--- Helper function to set a deeply nested value in a table
+--- @param tbl table The table to modify
+--- @param path string Dot-separated path (e.g., "department.business.groupA")
+--- @param value any The value to set
+function HTML.setNestedValue(tbl, path, value)
+    local parts = {}
+    for part in string.gmatch(path, "[^%.]+") do
+        table.insert(parts, part)
     end
     
-    return comp
+    local current = tbl
+    for i = 1, #parts - 1 do
+        local part = parts[i]
+        if current[part] == nil then
+            current[part] = {}
+        end
+        current = current[part]
+    end
+    
+    current[parts[#parts]] = value
+    return tbl
+end
+
+--- Helper function to get a deeply nested value from a table
+--- @param tbl table The table to query
+--- @param path string Dot-separated path (e.g., "department.business.groupA")
+--- @return any The value at the path, or nil if not found
+function HTML.getNestedValue(tbl, path)
+    local parts = {}
+    for part in string.gmatch(path, "[^%.]+") do
+        table.insert(parts, part)
+    end
+    
+    local current = tbl
+    for _, part in ipairs(parts) do
+        if current == nil then return nil end
+        if type(current) ~= "table" then return nil end
+        current = current[part]
+    end
+    
+    return current
+end
+
+--- Helper function to update a deeply nested list item
+--- @param path string Dot-separated path to the list (e.g., "department.business.groupA")
+--- @param index number The index in the list (1-based for Lua)
+--- @param item table The new item value
+--- @return boolean True if successful
+function HTML.updateNestedListItem(path, index, item)
+    local parts = {}
+    for part in string.gmatch(path, "[^%.]+") do
+        table.insert(parts, part)
+    end
+    
+    -- Navigate to parent object
+    local current = __global_state or {}  -- or comp.state if in component context
+    for i = 1, #parts - 1 do
+        local part = parts[i]
+        if current[part] == nil then
+            return false
+        end
+        current = current[part]
+    end
+    
+    local listKey = parts[#parts]
+    if type(current[listKey]) ~= "table" then
+        return false
+    end
+    
+    current[listKey][index] = item
+    return true
+end
+
+--- Helper function to add item to deeply nested list
+--- @param path string Dot-separated path to the list
+--- @param item table The item to add
+--- @return number The new index
+function HTML.addToNestedList(path, item)
+    local parts = {}
+    for part in string.gmatch(path, "[^%.]+") do
+        table.insert(parts, part)
+    end
+    
+    local current = __global_state or {}
+    for i = 1, #parts - 1 do
+        local part = parts[i]
+        if current[part] == nil then
+            current[part] = {}
+        end
+        current = current[part]
+    end
+    
+    local listKey = parts[#parts]
+    if current[listKey] == nil then
+        current[listKey] = {}
+    end
+    
+    table.insert(current[listKey], item)
+    return #current[listKey]
 end
 
 --- Creates a component that can handle both normal state and clientState
@@ -2774,106 +3188,78 @@ end
 --------------------------------------------------
 -- 🧬 Component System (Reactive)
 --------------------------------------------------
---- Creates a stateful component.
---- This function returns a component object with methods for rendering, managing state, and handling patches.
+--- Creates a stateful component with versioned patches.
 --- @param fn fun(state: table, props: table): VDOMNode The render function for the component.
 --- @param initialState table? The initial state of the component.
---- @field initialState._reactiveBindings table<string, boolean>? A map of state keys that are reactively bound to DOM elements.
 --- @return Component A component object.
 function HTML.createComponent(fn, initialState)
- local comp = {}
- comp.state = initialState or {}
- comp.lastNode = nil
- comp.patches = {}
- comp.props = {}
- -- Explicitly define reactive bindings, or derive from state keys if preferred
- comp.reactiveBindings = comp.state._reactiveBindings or {}
- comp.state._reactiveBindings = nil -- Clean up if directly in state
-
---- Updates the component's state and automatically generates patches by comparing the old VDOM with the new VDOM.
---- This is the primary way to trigger UI updates.
---- @param partial table A table containing the state keys and new values to merge into the component's state.
---- @return PatchObject[] A list of generated patch objects.
-function comp.setState(partial)
-  local generatedPatches = {}
-
-  for k, v in pairs(partial) do
-    -- Only update if value actually changed
-    if comp.state[k] ~= v then
-      comp.state[k] = v
-
-      -- Reactive variable? → Prefer update-var
-      if comp.reactiveBindings[k] then
-        table.insert(generatedPatches, {
-          type = "update-var",
-          varName = k,
-          value = v,
-          selector = string.format('[data-bind="%s"]', k)
+    local comp = {}
+    comp.state = initialState or {}
+    comp.lastNode = nil
+    comp.patches = {}
+    comp.props = {}
+    comp.reactiveBindings = comp.state._reactiveBindings or {}
+    comp.state._reactiveBindings = nil
+    comp.componentId = HTML.uid():gsub("^n", "c") -- Component ID for versioning
+    
+    -- Track patch versions
+    comp.currentVersion = 0
+    comp.lastAppliedVersion = 0
+    
+    --- Enhanced setState with versioned patches
+    --- @param partial table A table containing state updates
+    --- @return table Patch envelope
+    function comp.setState(partial)
+        -- Update state
+        for k, v in pairs(partial) do
+            comp.state[k] = v
+        end
+        
+        -- Generate new VDOM
+        local oldNode = comp.lastNode
+        local newNode = fn(comp.state, comp.props)
+        comp.lastNode = newNode
+        
+        -- Generate patches with version envelope
+        local patches = HTML.diff(oldNode, newNode, {
+            componentId = comp.componentId,
+            prevState = oldNode and comp.state or nil,
+            nextState = comp.state
         })
-
-      -- Array? → Treat as list patch
-      elseif type(v) == "table" and #v > 0 then
-        table.insert(generatedPatches, HTML.patch_list(
-          string.format('[data-bind="%s"]', k),
-          v,
-          k .. "_template"
-        ))
-
-      -- Object-like table? → Treat as object patch
-      elseif type(v) == "table" then
-        table.insert(generatedPatches, HTML.patch_object(
-          string.format('[data-bind="%s"]', k),
-          v,
-          k .. "_template"
-        ))
-
-      else
-        -- Primitive value not bound → fallback to nested patch
-        table.insert(generatedPatches, HTML.patch_nested(
-          ":scope", -- Will be replaced if you store selector map
-          k,
-          v
-        ))
-      end
+        
+        comp.currentVersion = comp.currentVersion + 1
+        
+        -- If it's a patch envelope, add version
+        if patches.version then
+            patches.version = comp.currentVersion
+        end
+        
+        comp.patches = patches
+        return patches
     end
-  end
-
-  -- Always do a VDOM diff in case there are structural changes
-  local newNode = fn(comp.state, comp.props)
-  local domPatches = HTML.diff(comp.lastNode, newNode)
-  comp.lastNode = newNode
-
-  for _, p in ipairs(domPatches) do
-    table.insert(generatedPatches, p)
-  end
-
-  comp.patches = generatedPatches
-  return generatedPatches
-end
-
---- Renders the component's VDOM based on its current state and provided props.
---- @param props table? Properties to pass to the component's render function.
---- @return VDOMNode The rendered VDOM node.
- function comp.render(props)
-  comp.props = props or {}
-  local node = fn(comp.state, comp.props)
-  comp.lastNode = node
-  return node
- end
-
- --- Accepts patch messages (e.g., from JS) and mutates state.
- --- This function is designed to be called by the client-side patching mechanism.
- --- @param method string The name of the method to call on the component's `methods` table.
- --- @param args any[] Arguments to pass to the component method.
- --- @return any The result of the called method.
- function comp.patch(method, args)
-  if type(comp.methods) == "table" and type(comp.methods[method]) == "function" then
-   return comp.methods[method](comp, table.unpack(args or {}))
-  end
- end
-
- comp.methods = {} -- define comp.methods.add/remove etc externally
- return comp
+    
+    --- Render with component context
+    --- @param props table? Component props
+    --- @return VDOMNode Rendered VDOM
+    function comp.render(props)
+        comp.props = props or {}
+        local node = fn(comp.state, comp.props)
+        comp.lastNode = node
+        return node
+    end
+    
+    --- Patch method
+    --- @param method string Method name
+    --- @param args any[] Method arguments
+    --- @return any Result
+    function comp.patch(method, args)
+        if type(comp.methods) == "table" and type(comp.methods[method]) == "function" then
+            return comp.methods[method](comp, table.unpack(args or {}))
+        end
+    end
+    
+    comp.methods = {}
+    return comp
 end
 --------------------------------------------------
 -- 🧱 App + Page Wrapper with Hydration
@@ -2944,6 +3330,111 @@ function HTML.App(config)
 
     -- 1. Inject initial state
     table.insert(head_elements, HTML.e("script", {}, "window.__INITIAL_STATE__ = " .. cjson.encode(state) .. ";"))
+
+        -- Add patch client initialization script
+    table.insert(head_elements, HTML.e("script", { type = "module" }, [[
+        // Initialize authoritative client state
+        window.clientState = {
+            version: 0,
+            components: {}
+        };
+        
+        // Strict data-node-id targeting
+        function findNode(id) {
+            return document.querySelector(`[data-node-id="\${id}"]`);
+        }
+        
+        // Patch envelope handler with version guard
+        window.applyPatchEnvelope = function(envelope) {
+            if (!envelope || !envelope.version || !envelope.ops) {
+                console.error("Invalid patch envelope received.", envelope);
+                return;
+            }
+            
+            // Version guard - reject stale patches
+            if (envelope.version <= window.clientState.version) {
+                console.warn("Stale patch ignored. Current version:", window.clientState.version, "Received:", envelope.version);
+                return;
+            }
+            
+            window.clientState.version = envelope.version;
+            
+            // Update component state before DOM ops
+            if (envelope.state && envelope.componentId) {
+                window.clientState.components[envelope.componentId] = envelope.state.next;
+            }
+            
+            // Apply operations
+            envelope.ops.forEach(op => {
+                const el = findNode(op.target);
+                
+                if (!el) {
+                    console.warn(`Patch target not found for ID: \${op.target} for operation \${op.op}`, op);
+                    return;
+                }
+                
+                switch (op.op) {
+                    case "text":
+                        el.textContent = op.value;
+                        break;
+                    case "attr":
+                        el.setAttribute(op.name, op.value);
+                        break;
+                    case "remove-attr":
+                        el.removeAttribute(op.name);
+                        break;
+                    case "remove":
+                        el.remove();
+                        break;
+                    case "insert":
+                        if (op.html && op.position) {
+                            el.insertAdjacentHTML(op.position, op.html);
+                        }
+                        break;
+                    case "replace":
+                        if (op.html) {
+                            el.outerHTML = op.html;
+                        } else {
+                            el.remove();
+                        }
+                        break;
+                    default:
+                        console.warn("Unhandled patch operation type:", op.op, op);
+                }
+            });
+            
+            // Trigger hydration complete callback
+            window.__onHydrationComplete__?.();
+        };
+        
+        // Single patch handler for backward compatibility
+        window.applyPatch = function(patch) {
+            if (patch.op && patch.target) {
+                const el = findNode(patch.target);
+                if (!el) {
+                    console.warn(`Patch target not found: \${patch.target}`, patch);
+                    return;
+                }
+                
+                switch (patch.op) {
+                    case "text":
+                        el.textContent = patch.value;
+                        break;
+                    case "attr":
+                        el.setAttribute(patch.name, patch.value);
+                        break;
+                    case "remove-attr":
+                        el.removeAttribute(patch.name);
+                        break;
+                    case "remove":
+                        el.remove();
+                        break;
+                    default:
+                        console.warn("Unknown patch operation:", patch.op, patch);
+                }
+            }
+        };
+    ]]))
 
     -- Add the new elements to the head_elements table at the beginning
     for _, el in ipairs(new_head_elements) do

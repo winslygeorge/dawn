@@ -1,6 +1,9 @@
+
 -- FunctionalComponent.lua
 -- ✅ Full WebSocket-aware + HTMLReactive component module + Redis state persistence + ClientState support
 -- OPTIMIZED: memory/performance improvements for clientStates and general micro-optimizations
+-- UPDATED: Fixed integration with HTMLReactive.lua
+-- UPDATED: Corrected setState with proper state/VDOM snapshots and diffing
 
 local viewEngine = require("layout.renderer.lustache_renderer")
 local css_helper = require("utils.css_helper")
@@ -52,8 +55,9 @@ function FunctionalComponent:extends()
         clients = {},
         _source_file = debug.getinfo(2, "S").source:gsub("^@", ""), -- Track source file
         _watcher = nil, -- Will hold watcher reference
+        __vdom = nil, -- NEW: VDOM snapshot for diffing
         setOnClientReady = function  ()    
-self:onClientReady(function (comp, parent_ws_id, parent_client_toke)
+self:onClientReady(function (comp, parent_ws_id, parent_client_token)
     local clientState = comp:getClientState(self._ws_id)
 end)
 end,
@@ -67,6 +71,40 @@ end,
     local function log(level, msg, ...)
         if new_component.server and new_component.server.logger and new_component.server.logger.log then
             new_component.server.logger:log(level, string.format(msg, ...), "FunctionalComponent", new_component.component_key)
+        end
+    end
+
+    -- NEW: emitPatches method for versioned patch envelopes
+    function new_component:emitPatches(patches_envelope)
+        assert(type(patches_envelope) == "table" and patches_envelope.version, "Patches must be a versioned envelope.")
+
+        -- Add component namespace to patches if available
+        if self.component_key and patches_envelope.ops and #patches_envelope.ops > 0 then
+            for _, patch in ipairs(patches_envelope.ops) do
+                patch.component = (self.server and self.server.get_patch_namespace) 
+                    and self.server:get_patch_namespace(self.component_key, patch.varName or patch.path) 
+                    or self.component_key
+            end
+        end
+
+        -- Send patches to patch queue
+        if patches_envelope.ops and #patches_envelope.ops > 0 and self.server and self.server.patch_queue then
+            self.server.patch_queue:push(patches_envelope)
+        end
+
+        -- Also broadcast to connected clients
+        if patches_envelope.ops and #patches_envelope.ops > 0 and self.clients then
+            for ws_id in pairs(self.clients) do
+                if self.server and self.server.shared_state and self.server.shared_state.sockets then
+                    pcall(function()
+                        self.server.shared_state.sockets:send_to_user(ws_id, {
+                            id = uuid.v4(),
+                            type = "patches",
+                            data = patches_envelope.ops
+                        })
+                    end)
+                end
+            end
         end
     end
 
@@ -119,6 +157,7 @@ end,
             end
 
             self.reactive_root_node = self:render()
+            self.__vdom = self.reactive_root_node -- Update VDOM snapshot
             log(log_level.INFO, "[FunctionalComponent] ✅ DOM rebuilt after reload.")
         elseif self.view_mode == "lustache" then
             self.viewEngine:reloadTemplate(self.viewname)
@@ -432,6 +471,269 @@ end,
         return state
     end
 
+
+    function new_component:setRedisComponentState(comp_key, new_state)
+    if type(new_state) ~= "table" then
+        log(log_level.WARN,
+            "[FunctionalComponent] ⚠️ setRedisComponentState expected table, got %s",
+            type(new_state)
+        )
+        return false
+    end
+
+    if self.server
+        and self.server.dawn_sockets_handler
+        and self.server.dawn_sockets_handler.state_management
+        and self.server.dawn_sockets_handler.state_management.redis
+        and (comp_key or self.component_key)
+    then
+        local redis = self.server.dawn_sockets_handler.state_management.redis
+        local key = "component_state:" .. (comp_key or self.component_key)
+
+        local ok, err = pcall(function()
+            redis:set(key, cjson.encode(new_state))
+            redis:expire(key, 86400)
+        end)
+
+        if not ok then
+            log(log_level.WARN,
+                "[FunctionalComponent] ⚠️ Redis SET (component state) failed: %s",
+                tostring(err)
+            )
+            return false
+        end
+
+        return true
+    end
+
+    log(log_level.WARN,
+        "[FunctionalComponent] ⚠️ Cannot SET component state — Redis or component key missing"
+    )
+    return false
+end
+
+
+function new_component:setComponentState(comp_key, newState)
+    assert(type(newState) == "table", "setComponentState expects a table")
+    assert(comp_key, "setComponentState requires a component key")
+
+    local self_instance = self
+    local current_state = self_instance.state or {}
+
+    ---------------------------------------------------------
+    -- IMMUTABLE BFS DIFF (Cycle Safe)
+    ---------------------------------------------------------
+    local function clone_table(tbl)
+        local out = {}
+        for k, v in pairs(tbl) do out[k] = v end
+        return out
+    end
+
+    local function immutable_bfs_diff_cycle_safe(old, new)
+        local changed = {}
+        local visited = setmetatable({}, { __mode = "k" })
+        local queue = { { old, new, {} } }
+
+        local result = clone_table(old)
+        visited[old] = { clone = result }
+
+        while #queue > 0 do
+            local item = table.remove(queue, 1)
+            local old_tbl, new_tbl, path = item[1], item[2], item[3]
+            local clone = visited[old_tbl].clone
+
+            for key, new_value in pairs(new_tbl) do
+                local old_value = old_tbl[key]
+                local old_type = type(old_value)
+                local new_type = type(new_value)
+
+                if old_type == "table" and new_type == "table" then
+                    if old_value == new_value then
+                        clone[key] = old_value
+                    else
+                        if not visited[old_value] then
+                            local new_clone = clone_table(old_value)
+                            clone[key] = new_clone
+                            visited[old_value] = { clone = new_clone }
+
+                            table.insert(queue, {
+                                old_value,
+                                new_value,
+                                { unpack(path), key }
+                            })
+                        else
+                            clone[key] = visited[old_value].clone
+                        end
+                    end
+
+                elseif old_value ~= new_value then
+                    clone[key] = new_value
+
+                    local parts = {}
+                    if type(path) == "table" and #path > 0 then
+                        for i = 1, #path do parts[#parts+1] = path[i] end
+                    end
+                    parts[#parts+1] = key
+
+                    changed[table.concat(parts, ".")] = new_value
+
+                else
+                    clone[key] = old_value
+                end
+            end
+        end
+
+        return result, changed
+    end
+
+    ---------------------------------------------------------
+    -- Apply immutable diff
+    ---------------------------------------------------------
+    local nextState, changed = immutable_bfs_diff_cycle_safe(
+        current_state,
+        newState
+    )
+
+    if not next(changed) then
+        return {}
+    end
+
+    -- replace state
+    self_instance.state = nextState
+
+    ---------------------------------------------------------
+    -- Generate patches
+    ---------------------------------------------------------
+    local patches = {}
+
+    if self_instance.reactive_component
+        and type(self_instance.reactive_component.setState) == "function"
+    then
+        patches = self_instance.reactive_component.setState(changed) or {}
+    else
+        for key, value in pairs(changed) do
+            table.insert(patches, {
+                type = "update-var",
+                varName = key,
+                value = value,
+                selector = string.format('[data-bind="%s"]', key),
+                isClientState = false
+            })
+        end
+    end
+
+    ---------------------------------------------------------
+    -- Add namespace
+    ---------------------------------------------------------
+    if comp_key and #patches > 0 then
+        for _, patch in ipairs(patches) do
+            patch.component =
+                (self_instance.server and self_instance.server.get_patch_namespace)
+                and self_instance.server:get_patch_namespace(
+                    comp_key,
+                    patch.varName or patch.path
+                )
+                or comp_key
+        end
+    end
+
+    ---------------------------------------------------------
+    -- Send patches to all connected clients
+    ---------------------------------------------------------
+    if #patches > 0 then
+        local payload = {
+            id = uuid.v4(),
+            type = "patches",
+            data = patches
+        }
+
+        if self_instance.clients then
+            for ws_id in pairs(self_instance.clients) do
+                if self_instance.server
+                   and self_instance.server.shared_state
+                   and self_instance.server.shared_state.sockets
+                then
+                    pcall(function()
+                        self_instance.server.shared_state.sockets:
+                            send_to_user(ws_id, payload)
+                    end)
+                end
+            end
+        end
+    end
+
+    ---------------------------------------------------------
+    -- Persist to Redis for THIS component key
+    ---------------------------------------------------------
+    if self_instance.server
+        and self_instance.server.dawn_sockets_handler
+        and self_instance.server.dawn_sockets_handler.state_management
+        and self_instance.server.dawn_sockets_handler.state_management.redis
+        and comp_key
+    then
+        local redis = self_instance.server.dawn_sockets_handler.state_management.redis
+        local key = "component_state:" .. comp_key
+
+        local ok, err = pcall(function()
+            redis:set(key, cjson.encode(self_instance.state))
+            redis:expire(key, 86400)
+        end)
+
+        if not ok then
+            log(log_level.WARN,
+                "[FunctionalComponent] ⚠️ Redis SET failed: %s",
+                tostring(err)
+            )
+        end
+    end
+
+    return patches
+end
+
+
+
+    function new_component:getRedisComponentState(comp_key)
+    local state = {}
+
+    -- Ensure required objects exist
+    if self.server
+        and self.server.dawn_sockets_handler
+        and self.server.dawn_sockets_handler.state_management
+        and self.server.dawn_sockets_handler.state_management.redis
+        and (comp_key or self.component_key)
+    then
+        local redis = self.server.dawn_sockets_handler.state_management.redis
+        local key = "component_state:" .. (comp_key or self.component_key)
+
+        -- Try decode via your helper (assumed)
+        local decoded = redis_get_decoded(redis, key)
+
+        if decoded then
+            state = decoded
+
+        else
+            -- Prime with empty table since state missing
+            state = {}
+
+            local primeOk, primeErr = pcall(function()
+                redis:set(key, cjson.encode(state))
+                redis:expire(key, 86400)
+            end)
+
+            if not primeOk then
+                log(log_level.WARN,
+                    "[FunctionalComponent] ⚠️ Redis SET (prime empty component state) failed: %s",
+                    tostring(primeErr)
+                )
+            end
+        end
+    end
+
+    -- Guarantee table return
+    if type(state) ~= "table" then state = {} end
+    return state
+end
+
     -- NEW: Get clientState (returns plain table). Manages parent merging if enabled.
     function new_component:getClientState(ws_id)
         -- If no token, try to borrow from parent
@@ -503,115 +805,146 @@ end,
         return true
     end
 
-    -- NEW: setClientState updated to use slot structure, minimal allocations, patching, pruning and Redis persistence
-    function new_component:setClientState(ws_id, newState, comp_key)
-        assert(type(newState) == "table", "setClientState expects a table")
 
-        if not self.client_token and self.parent then
-            self.client_token = self.parent.client_token
+    -- Robust, production-ready setClientState
+function new_component:setClientState(ws_id, newState, comp_key)
+    assert(type(newState) == "table", "setClientState expects a table")
+
+    -- ---- configuration / helpers ----
+    local MAX_PATCH_PAYLOAD = 1024 * 256 -- 256KB payload guard for sending
+
+    local function safe_encode(obj)
+        local ok, s = pcall(function() return cjson.encode(obj) end)
+        if not ok then
+            return "<non-serializable>"
         end
-
-        local key = self.client_token or ws_id
-        if not key then
-            return {}
-        end
-
-        -- ensure slot exists
-        local slot = self.client_states[key]
-        if not slot then
-            slot = { state = {}, _last_seen = os_time() }
-            self.client_states[key] = slot
-        end
-
-        local clientState = slot.state or {}
-        local oldState = {}
-        if self.HTMLReactive.shallowCopy then
-            oldState = self.HTMLReactive.shallowCopy(clientState) or {}
-        else
-            -- conservative shallow copy
-            for k, v in pairs(clientState) do oldState[k] = v end
-        end
-
-        -- Merge newState into clientState (in-place)
-
-         self.client_states[key].state = self.client_states[key] and self.client_states[key].state  or {} 
-        
-        for k, v in pairs(newState) do
-           self.client_states[key].state[k] = v
-        end
-
-        clientState = self.client_states[key].state
-        slot._last_seen = os_time()
-
-        -- Determine diffs (shallow) and generate patches if reactive
-        if self.view_mode == "html_reactive" and self.reactive_component then
-            local changed = false
-            for k, v in pairs(newState) do
-                local equals = (self.HTMLReactive.shallowEqual and self.HTMLReactive.shallowEqual(oldState[k], v)) or (oldState[k] == v)
-                if not equals then
-                    changed = true
-                    break
-                end
-            end
-
-            if changed then
-                local patches = {}
-                for k, v in pairs(newState) do
-                    -- local eq = (self.HTMLReactive.shallowEqual and self.HTMLReactive.shallowEqual(oldState[k], v)) or (oldState[k] == v)
-                    -- if not eq then
-                        table_insert(patches, {
-                            type = "update-var",
-                            path = {"clientState", k},
-                            value = v,
-                            varName = "clientState." .. k
-                        })
-                    -- end
-                end
-
-
-
-                if #patches > 0 then
-                    
-                    for _, patch in ipairs(patches) do
-                        patch.component = (self.server and self.server.get_patch_namespace) and self.server:get_patch_namespace(comp_key or self.component_key, patch.varName or patch.path) or nil
-                        patch.isClientOnly = true
-                    end
-
-                    local payload = {
-                        id = uuid.v4(),
-                        type = "patches",
-                        data = patches
-                    }
-
-                     if self.parent and self.parent.server and self.parent.server.shared_state and self.parent.server.shared_state.sockets then
-                            self.parent.server.shared_state.sockets:send_to_user(ws_id, payload)
-                        elseif self.server and self.server.shared_state and self.server.shared_state.sockets then
-                            self.server.shared_state.sockets:send_to_user(ws_id, payload)
-                        else
-                            log(log_level.WARN, "[FunctionalComponent] No socket layer available to send patches")
-                        end
-                end
-            end
-        end
-
-        -- Persist to Redis (only the state object)
-        if self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management and self.server.dawn_sockets_handler.state_management.redis and self.component_key then
-            local redis = self.server.dawn_sockets_handler.state_management.redis
-            local keyname = string.format("client_state:%s:%s", comp_key or self.component_key, key)
-            local ok, err = pcall(function()
-                redis:set(keyname, cjson.encode(clientState))
-                redis:expire(keyname, 86400)
-            end)
-            if not ok then
-                log(log_level.WARN, "[FunctionalComponent] ⚠️ Redis SET (client_state) failed: %s", tostring(err))
-            end
-        end
-
-        -- prune after updates to avoid unbounded growth
-        pcall(function() self:pruneClientStates(300, 24 * 3600) end)
-
-        return clientState
+        return s
     end
+
+    -- Replace circular references with a placeholder to avoid infinite recursion/huge payloads.
+    local function remove_cycles(tbl)
+        local seen = {}
+        local function _walk(v)
+            if type(v) ~= "table" then return v end
+            if seen[v] then return "[[CIRCULAR]]" end
+            seen[v] = true
+            local out = {}
+            for k, val in pairs(v) do
+                out[k] = _walk(val)
+            end
+            return out
+        end
+        return _walk(tbl)
+    end
+
+    -- normalize comp_key and validate
+
+    local normalized_key = comp_key or self.component_key
+    -- if caller supplied a validComponentKeys table on the component, check it
+    if self.validComponentKeys and type(self.validComponentKeys) == "table" then
+        if not self.validComponentKeys[normalized_key] then
+            return
+        end
+    end
+    comp_key = normalized_key
+
+    -- ensure client_token inheritance
+    if not self.client_token and self.parent then
+        self.client_token = self.parent.client_token
+    end
+
+    local key = self.client_token or ws_id
+    if not key then
+        return {}
+    end
+
+    -- ensure slot exists
+    local slot = self.client_states[key]
+    if not slot then
+        slot = { state = {}, _last_seen = os_time() }
+        self.client_states[key] = slot
+    end
+
+    local clientState = slot.state
+    if not clientState or type(clientState) ~= "table" then
+        clientState = {}
+        slot.state = clientState
+    end
+
+    -- take a shallow snapshot of the previous state
+    local oldState = {}
+    if self.HTMLReactive and self.HTMLReactive.shallowCopy then
+        oldState = (self.HTMLReactive.shallowCopy(clientState) or {})
+    else
+        for k, v in pairs(clientState) do oldState[k] = v end
+    end
+
+    -- Prevent accidental nested routeManager recursion: if newState contains routeManager (or known recursive fields),
+    -- sanitize it by replacing recursive cycles. We already call remove_cycles for logging, but also sanitize the actual newState.
+    local sanitizedNewState = {}
+    for k, v in pairs(newState) do
+        -- convert any tables that are obviously self-referential to a safe copy that replaces cycles
+        if type(v) == "table" then
+            -- shallow copy but replace cycles
+            sanitizedNewState[k] = remove_cycles(v)
+        else
+            sanitizedNewState[k] = v
+        end
+    end
+
+    -- MERGE: apply sanitizedNewState into clientState (in-place).
+    -- NOTE: v == nil acts as delete.
+    for k, v in pairs(sanitizedNewState) do
+        if v == nil then
+            if clientState[k] ~= nil then
+                clientState[k] = nil
+            end
+        else
+            local before = clientState[k]
+            clientState[k] = v
+        end
+    end
+
+    -- update last seen
+    slot._last_seen = os_time()
+
+    -- ✅ FIXED: Use the new setState approach for client state updates
+    -- This ensures proper VDOM snapshotting and diffing
+    if self.view_mode == "html_reactive" and self.reactive_component then
+        -- Create a wrapper updater function that updates client state
+        local clientStateUpdater = function(currentState)
+            -- Note: currentState here is component state, not client state
+            -- We need to return the same state but trigger a re-render
+            -- The actual client state is already updated above
+            return currentState
+        end
+        
+        -- Call setState to trigger proper VDOM diffing
+        self:setState(clientStateUpdater)
+    end
+
+    -- Persist to Redis (only the state object)
+    if self.server and self.server.dawn_sockets_handler and
+       self.server.dawn_sockets_handler.state_management and
+       self.server.dawn_sockets_handler.state_management.redis and
+       self.component_key then
+
+        local redis = self.server.dawn_sockets_handler.state_management.redis
+        local keyname = string.format("client_state:%s:%s", comp_key or self.component_key, key)
+
+        local ok, err = pcall(function()
+            redis:set(keyname, cjson.encode(clientState))
+            redis:expire(keyname, 86400)
+        end)
+    end
+
+    -- Prune stale states (best-effort)
+    pcall(function() self:pruneClientStates(300, 24 * 3600) end)
+
+    -- Return canonical, up-to-date state
+    return clientState
+end
+
 
     function new_component:updateParentClientState(ws_id, newState)
         assert(type(newState) == "table", "updateParentClientState expects a table")
@@ -751,6 +1084,87 @@ end,
         end
     end
 
+    -- Helper for deep equality comparison
+    local deepEqual = HTMLReactive.deepEqual or function(a, b)
+        if type(a) ~= type(b) then return false end
+        if type(a) ~= "table" then return a == b end
+        
+        local visited = {}
+        local function compare(t1, t2)
+            if visited[t1] and visited[t1] == t2 then return true end
+            visited[t1] = t2
+            
+            local count1, count2 = 0, 0
+            for k, v in pairs(t1) do
+                count1 = count1 + 1
+                if not compare(v, t2[k]) then return false end
+            end
+            
+            for _ in pairs(t2) do
+                count2 = count2 + 1
+            end
+            
+            return count1 == count2
+        end
+        
+        return compare(a, b)
+    end
+
+    -- ✅ FIXED: Corrected setState method with proper VDOM snapshotting and diffing
+    function new_component:setState(updater)
+        -- Ensure component is initialized in reactive mode
+        if self.view_mode ~= "html_reactive" or not self.HTMLReactive or not self.reactive_render_fn then
+            error("setState called on non-reactive component or before initial render.", 2)
+        end
+        
+        -- 1. Snapshot previous state and VDOM
+        local prevState = self.state
+        -- Use __vdom as the authoritative VDOM snapshot
+        local prevVDOM = self.__vdom or self.reactive_root_node 
+
+        -- 2. Calculate next state and update
+        local nextState
+        if type(updater) == "function" then
+            nextState = updater(prevState)
+        else
+            nextState = updater -- Allow direct table assignment
+        end
+        
+        self.state = nextState
+        
+        -- 3. Render new VDOM
+        local nextVDOM = self:render() -- Renders using the new self.state
+
+        -- 4. Store new VDOM
+        self.__vdom = nextVDOM
+        self.reactive_root_node = nextVDOM -- Keep the original field in sync
+
+        -- 5. Generate patches with state delta context
+        local patches_envelope = self.HTMLReactive.diff(prevVDOM, nextVDOM, {
+            prevState = prevState,
+            nextState = nextState,
+            componentId = self.component_key -- Use the component's unique key
+        })
+
+        -- 6. Send the patch envelope
+        self:emitPatches(patches_envelope)
+
+        -- 7. Persist state to Redis
+        if self.server and self.server.dawn_sockets_handler and
+           self.server.dawn_sockets_handler.state_management and
+           self.server.dawn_sockets_handler.state_management.redis and
+           self.component_key then
+            local redis = self.server.dawn_sockets_handler.state_management.redis
+            local key = "component_state:" .. self.component_key
+            local ok, err = pcall(function()
+                redis:set(key, cjson.encode(self.state))
+                redis:expire(key, 86400)
+            end)
+        end
+
+        return patches_envelope
+    end
+
     function new_component:init(callback)
         assert(type(callback) == "function", "Init callback must be a function.")
 
@@ -795,8 +1209,8 @@ end,
 
             self.reactive_render_fn = initial_vdom_builder
 
-            if self.HTMLReactive.createComponentWithClientState then
-                self.reactive_component = self.HTMLReactive.createComponentWithClientState({
+            if self.HTMLReactive.createComponentEx then
+                self.reactive_component = self.HTMLReactive.createComponentEx({
                     render = function(state, props, clientState)
                         local renderContext = {
                             state = state,
@@ -805,21 +1219,24 @@ end,
                             HTMLReactive = self.HTMLReactive,
                             clientState = clientState or self:getClientState(self._ws_id)
                         }
-                        return initial_vdom_builder(renderContext.state, renderContext.props, renderContext.children, renderContext.HTMLReactive,self.collected_js_scripts, renderContext.clientState)
+                        return initial_vdom_builder(renderContext.state, renderContext.props, renderContext.children, renderContext.HTMLReactive, self.collected_js_scripts, renderContext.clientState)
                     end,
                     initialState = self.state,
                     initialClientState = self:getClientState(self._ws_id),
-                    onClientStateChange = function(newClientState, oldClientState)
-                        log(log_level.DEBUG, "[FunctionalComponent] ClientState changed")
-                    end
+                    methods = self.methods
                 })
+                
+                -- Set component key on reactive component if needed
+                if self.component_key then
+                    self.reactive_component.component_key = self.component_key
+                end
             else
-                self.reactive_component = self.HTMLReactive.createComponent(function(state, props, children, HTMLReactive)
+                self.reactive_component = self.HTMLReactive.createComponent(function(state, props)
                     local renderContext = {
                         state = state,
                         props = props,
-                        children = children,
-                        HTMLReactive = HTMLReactive,
+                        children = self.children,
+                        HTMLReactive = self.HTMLReactive,
                         clientState = self:getClientState(self._ws_id)
                     }
                     return initial_vdom_builder(renderContext.state, renderContext.props, renderContext.children, renderContext.HTMLReactive, self.collected_js_scripts, renderContext.clientState)
@@ -827,6 +1244,7 @@ end,
             end
 
             self.reactive_root_node = self:render()
+            self.__vdom = self.reactive_root_node -- Initialize VDOM snapshot
 
             -- utils (kept API but optimized implementation)
             self.utils = {
@@ -896,49 +1314,6 @@ end,
                 end
             }
 
-            if not self.setState then
-                self.setState = function(self_instance, newState, opts)
-                    assert(type(newState) == "table", "setState expects a table")
-
-                    for k, v in pairs(newState) do
-                        self.state[k] = v
-                    end
-
-                    local patches = {}
-                    if self_instance.reactive_component and type(self_instance.reactive_component.setState) == "function" then
-                        patches = self_instance.reactive_component.setState(newState) or {}
-                    end
-
-                    if self_instance.component_key and #patches > 0 then
-                        for _, patch in ipairs(patches) do
-                            patch.component = (self_instance.server and self_instance.server.get_patch_namespace) and self_instance.server:get_patch_namespace(self_instance.component_key, patch.varName or patch.path) or nil
-                        end
-                    end
-
-                    if #patches > 0 then
-                        if self_instance.parent and self_instance.parent.server and self_instance.parent.server.patch_queue then
-                            self_instance.parent.server.patch_queue:push(patches)
-                        elseif self_instance.server and self_instance.server.patch_queue then
-                            self_instance.server.patch_queue:push(patches)
-                        end
-                    end
-
-                    if self_instance.server and self_instance.server.dawn_sockets_handler and self_instance.server.dawn_sockets_handler.state_management and self_instance.server.dawn_sockets_handler.state_management.redis and self_instance.component_key then
-                        local redis = self_instance.server.dawn_sockets_handler.state_management.redis
-                        local key = "component_state:" .. self_instance.component_key
-                        local ok, err = pcall(function()
-                            redis:set(key, cjson.encode(self.state))
-                            redis:expire(key, 86400)
-                        end)
-                        if not ok then
-                            log(log_level.WARN, "[FunctionalComponent] ⚠️ Redis SET failed: %s", tostring(err))
-                        end
-                    end
-
-                    return patches
-                end
-            end
-
             if not self.patch and type(self.methods) == "table" then
                 self.patch = function(self_instance, ws_id, method, args)
                     local fn = self_instance.methods[method]
@@ -965,6 +1340,7 @@ end,
             patch_data.component = (self.server and self.server.get_patch_namespace) and self.server:get_patch_namespace(component_key_for_patch, patch_data.varName or patch_data.path) or nil
         end
 
+
         if self.server and self.server.patch_queue then
             self.server.patch_queue:push(patches_table)
         end
@@ -986,27 +1362,34 @@ end,
 
             local function replace_components(node)
                 if type(node) ~= "table" then return node end
-                if node._component and self.children[node.component_key] then
+                
+                -- Handle HTML.Component placeholders
+                if node._component and node.component_key and self.children[node.component_key] then
                     local child = self.children[node.component_key]
-
+                    
+                    -- Merge props
                     child.props = child.props or {}
                     for k, v in pairs(node.props or {}) do
                         child.props[k] = v
                     end
-
-                    if not child.parentState and self.state then
-                        child.parentState = self.state
-                    end
-
-                    if not child.parentMethods and self.methods then
-                        child.parentMethods = self.methods
-                    end
-
+                    
                     child.props.parentComponentKey = self.component_key
-                    child:enableParentClientStateAccess()
-                    return child:build()
+                    
+                    -- Build child component
+                    local child_html, child_css, child_js = child:build()
+                    
+                    -- Convert HTML string back to VDOM node for embedding
+                    if type(child_html) == "string" then
+                        return self.HTMLReactive.e("div", {
+                            ["data-embedded-component"] = node.component_key,
+                            ["data-original-props"] = cjson.encode(node.props or {})
+                        }, child_html)
+                    else
+                        return child_html
+                    end
                 end
-
+                
+                -- Recursively process children
                 if node.children then
                     local newChildren = {}
                     for i = 1, #node.children do
@@ -1017,7 +1400,10 @@ end,
                 return node
             end
 
-            return replace_components(vdom), { self.collected_css }, self.collected_js_scripts
+            local processed_vdom = replace_components(vdom)
+            local html = self.HTMLReactive.render(processed_vdom)
+            
+            return html, { self.collected_css }, self.collected_js_scripts
         else
             local html_parts = {}
             for _, node in ipairs(self.children) do
@@ -1212,22 +1598,26 @@ end,
     function new_component:rerender()
         assert(self.view_mode == "html_reactive", "rerender() only supported in html_reactive mode")
         assert(self.reactive_render_fn, "No reactive_render_fn set, did you call init()?")
-
+        
+        -- Snapshot previous VDOM
+        local prevVDOM = self.__vdom or self.reactive_root_node
+        
+        -- Re-render to update internal state
         local new_root = self:render()
-        local patches = self.HTMLReactive.diff(self.reactive_root_node, new_root)
         self.reactive_root_node = new_root
+        self.__vdom = new_root -- Update VDOM snapshot
+        
+        -- Generate patches with state delta context
+        local patches_envelope = self.HTMLReactive.diff(prevVDOM, new_root, {
+            prevState = self.state,
+            nextState = self.state,
+            componentId = self.component_key
+        })
 
-        if self.component_key and #patches > 0 then
-            for _, patch in ipairs(patches) do
-                patch.component = (self.server and self.server.get_patch_namespace) and self.server:get_patch_namespace(self.component_key, patch.varName or patch.path) or nil
-            end
-        end
-
-        if #patches > 0 and self.server and self.server.patch_queue then
-            self.server.patch_queue:push(patches)
-        end
-
-        return patches
+        -- Send patches
+        self:emitPatches(patches_envelope)
+        
+        return patches_envelope
     end
 
     return new_component
