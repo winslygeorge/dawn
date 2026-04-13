@@ -1,5 +1,5 @@
 package = "dawn"
-version = "1.2-4"
+version = "1.2-5"
 
 source = {
    url = "https://github.com/winslygeorge/dawn/archive/master.zip",

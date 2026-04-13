@@ -6,6 +6,8 @@ local viewEngine = require("layout.renderer.lustache_renderer")
 local css_helper = require("utils.css_helper")
 local HTMLBuilder = require("layout.renderer.MustacheHTMLBuilder")
 local HTMLReactive = require("layout.renderer.LuaHTMLReactive")
+local HTML = require("layout.renderer.LuaHTMLReactive")
+
 local cjson = require('dkjson')
 local uuid = require("utils.uuid")
 local log_level = require("utils.logger").LogLevel
@@ -86,45 +88,207 @@ end,
         self.client_token = token
     end
 
-    function new_component:hotReload()
-        if not self._source_file then
-            log(log_level.WARN, "[FunctionalComponent] ⚠️ Cannot hot reload (no source file tracked).")
-            return
-        end
+   function new_component:hotReload()
+    print("Hot reload called")
+    if not self._source_file then
+        log(log_level.WARN, "[FunctionalComponent] ⚠️ Cannot hot reload (no source file tracked).")
+        return
+    end
 
-        log(log_level.INFO, "[FunctionalComponent] ♻️ Hot reloading component from: %s", self._source_file)
+    log(log_level.INFO, "[FunctionalComponent] ♻️ Hot reloading component from: %s", self._source_file)
 
-        local mod_name = self._source_file:gsub("%.lua$", ""):gsub("^./", ""):gsub("/", ".")
-        package.loaded[mod_name] = nil
+    -- Clear the loaded module to force re-require
+    local mod_name = self._source_file:gsub("%.lua$", ""):gsub("^./", ""):gsub("/", ".")
+    package.loaded[mod_name] = nil
 
-        local ok, reloaded = pcall(require, mod_name)
-        if not ok then
-            log(log_level.ERROR, "[FunctionalComponent] ❌ Reload failed: %s", tostring(reloaded))
-            return
-        end
-
-        if self.view_mode == "html_reactive" and type(self.reactive_render_fn) == "function" then
-            local new_vdom_fn = self.reactive_render_fn
-            -- recreate reactive component with client state if API available
-            if self.HTMLReactive.createComponentWithClientState then
-                self.reactive_component = self.HTMLReactive.createComponentWithClientState({
-                    render = new_vdom_fn,
-                    initialState = self.state or {},
-                    onClientStateChange = function(newClientState, oldClientState)
-                        log(log_level.DEBUG, "[FunctionalComponent] ClientState changed after reload")
-                    end
-                })
-            else
-                self.reactive_component = self.HTMLReactive.createComponent(new_vdom_fn, self.state or {})
+    -- Clear cached require for all potential dependencies
+    local function clear_related_modules(base_name)
+        local base_pattern = base_name:gsub("%.", "%%.")
+        for module_name, _ in pairs(package.loaded) do
+            if module_name:match("^" .. base_pattern) or module_name:match(base_pattern .. "$") then
+                log(log_level.DEBUG, "[FunctionalComponent] Clearing module from cache: %s", module_name)
+                package.loaded[module_name] = nil
             end
-
-            self.reactive_root_node = self:render()
-            log(log_level.INFO, "[FunctionalComponent] ✅ DOM rebuilt after reload.")
-        elseif self.view_mode == "lustache" then
-            self.viewEngine:reloadTemplate(self.viewname)
-            log(log_level.INFO, "[FunctionalComponent] ✅ Mustache template reloaded.")
         end
     end
+    
+    clear_related_modules(mod_name)
+
+    -- Try to reload the module
+    local ok, reloaded = pcall(require, mod_name)
+    if not ok then
+        log(log_level.ERROR, "[FunctionalComponent] ❌ Reload failed: %s", tostring(reloaded))
+        return
+    end
+
+    if self.view_mode == "html_reactive" and type(self.reactive_render_fn) == "function" then
+        -- Get the new render function from the reloaded module
+        local new_render_fn = nil
+        
+        -- Try different ways to extract the render function
+        if type(reloaded) == "table" then
+            if reloaded.render then
+                new_render_fn = reloaded.render
+                log(log_level.DEBUG, "[FunctionalComponent] Found render function in reloaded module")
+            elseif reloaded.view then
+                new_render_fn = reloaded.view
+                log(log_level.DEBUG, "[FunctionalComponent] Found view function in reloaded module")
+            elseif reloaded.reactive_render_fn then
+                new_render_fn = reloaded.reactive_render_fn
+                log(log_level.DEBUG, "[FunctionalComponent] Found reactive_render_fn in reloaded module")
+            elseif reloaded.default and type(reloaded.default) == "function" then
+                new_render_fn = reloaded.default
+                log(log_level.DEBUG, "[FunctionalComponent] Found default export function")
+            end
+        elseif type(reloaded) == "function" then
+            new_render_fn = reloaded
+            log(log_level.DEBUG, "[FunctionalComponent] Module returned function directly")
+        end
+        
+        if not new_render_fn then
+            log(log_level.WARN, "[FunctionalComponent] ⚠️ Could not find render function in reloaded module. Module type: %s", type(reloaded))
+            return
+        end
+        
+        -- Store the old state for comparison (optional)
+        local old_state = self.state
+        
+        -- Update the render function
+        self.reactive_render_fn = new_render_fn
+        
+        -- Preserve existing state
+        local existing_state = {}
+        for k, v in pairs(self.state or {}) do
+            existing_state[k] = v
+        end
+        
+        local existing_client_state = {}
+        local client_state_key = self.client_token or self._ws_id
+        if client_state_key and self.client_states[client_state_key] then
+            for k, v in pairs(self.client_states[client_state_key]) do
+                if k ~= "_last_seen" then
+                    existing_client_state[k] = v
+                end
+            end
+        end
+        
+        -- Recreate the reactive component with the new render function
+        if self.HTMLReactive.createComponentWithClientState then
+            log(log_level.DEBUG, "[FunctionalComponent] Recreating component with client state support")
+            self.reactive_component = self.HTMLReactive.createComponentWithClientState({
+                render = function(state, props, clientState)
+                    local renderContext = {
+                        state = state,
+                        props = props,
+                        children = self.children,
+                        HTMLReactive = self.HTMLReactive,
+                        clientState = clientState or existing_client_state
+                    }
+                    return self.reactive_render_fn(renderContext.state, renderContext.props, 
+                        renderContext.children, renderContext.HTMLReactive,
+                        self.collected_js_scripts, renderContext.clientState)
+                end,
+                initialState = existing_state,
+                initialClientState = existing_client_state,
+                onClientStateChange = function(newClientState, oldClientState)
+                    log(log_level.DEBUG, "[FunctionalComponent] ClientState changed after reload")
+                end
+            })
+        elseif self.HTMLReactive.createCRUDEnhancedComponent then
+            log(log_level.DEBUG, "[FunctionalComponent] Recreating CRUD-enhanced component")
+            self.reactive_component = self.HTMLReactive.createCRUDEnhancedComponent(
+                function(state, props, clientState)
+                    local renderContext = {
+                        state = state,
+                        props = props,
+                        children = self.children,
+                        HTMLReactive = self.HTMLReactive,
+                        clientState = clientState or existing_client_state
+                    }
+                    return self.reactive_render_fn(renderContext.state, renderContext.props, 
+                        renderContext.children, renderContext.HTMLReactive,
+                        self.collected_js_scripts, renderContext.clientState)
+                end,
+                existing_state,
+                existing_client_state
+            )
+        else
+            log(log_level.DEBUG, "[FunctionalComponent] Recreating basic component")
+            self.reactive_component = self.HTMLReactive.createComponent(function(state, props, children, HTMLReactive)
+                local renderContext = {
+                    state = state,
+                    props = props,
+                    children = children,
+                    HTMLReactive = HTMLReactive,
+                    clientState = existing_client_state
+                }
+                return self.reactive_render_fn(renderContext.state, renderContext.props, 
+                    renderContext.children, renderContext.HTMLReactive, 
+                    self.collected_js_scripts, renderContext.clientState)
+            end, existing_state)
+        end
+        
+        -- Re-render the component
+        local render_ok, render_err = pcall(function()
+            self.reactive_root_node = self:render()
+        end)
+        
+        if not render_ok then
+            log(log_level.ERROR, "[FunctionalComponent] ❌ Failed to re-render after reload: %s", tostring(render_err))
+            return
+        end
+        
+        -- Broadcast reload notification to connected clients
+        if self.server and self.server.shared_state and self.server.shared_state.sockets then
+            local broadcast_ok, broadcast_err = pcall(function()
+                self.server.shared_state.sockets:broadcast_to_all({
+                    type = "component_reload",
+                    component_key = self.component_key,
+                    timestamp = os.time(),
+                    force_reload = true
+                })
+            end)
+            if not broadcast_ok then
+                log(log_level.WARN, "[FunctionalComponent] Failed to broadcast reload: %s", tostring(broadcast_err))
+            end
+        end
+        
+        log(log_level.INFO, "[FunctionalComponent] ✅ Component fully reloaded and re-rendered.")
+        
+        -- Trigger any registered onReload callbacks
+        if self.on_reload_callbacks then
+            for _, callback in ipairs(self.on_reload_callbacks) do
+                local callback_ok, callback_err = pcall(callback, self, old_state, self.state)
+                if not callback_ok then
+                    log(log_level.WARN, "[FunctionalComponent] Reload callback error: %s", tostring(callback_err))
+                end
+            end
+        end
+        
+    elseif self.view_mode == "lustache" then
+        self.viewEngine:reloadTemplate(self.viewname)
+        log(log_level.INFO, "[FunctionalComponent] ✅ Mustache template reloaded.")
+        
+        -- Re-render if possible
+        if self.render then
+            pcall(function()
+                self:render()
+            end)
+        end
+    else
+        log(log_level.WARN, "[FunctionalComponent] ⚠️ Unknown view mode or no render function: %s", tostring(self.view_mode))
+    end
+end
+
+-- Add method to register reload callbacks
+function new_component:onReload(callback)
+    if type(callback) ~= "function" then
+        error("onReload expects a function", 2)
+    end
+    self.on_reload_callbacks = self.on_reload_callbacks or {}
+    table_insert(self.on_reload_callbacks, callback)
+    return self
+end
 
     -- ==== PROPS HELPERS ====
     function new_component:updateProps(new_props)
@@ -221,10 +385,10 @@ end,
 
     function new_component:setComponentKey(key)
         assert(type(key) == "string" and #key > 0, "component_key must be a non-empty string")
-        if self.component_key then
-            assert(self.component_key == key, "Component key already set to a different value.")
-            return
-        end
+        -- if self.component_key then
+        --     assert(self.component_key == key, "Component key already set to a different value.")
+        --     return
+        -- end
         self.component_key = key
         if self.server and type(self.server.register_reactive_component) == "function" then
             self.server:register_reactive_component(self, self.component_key)
@@ -320,6 +484,12 @@ end,
         self.clients[ws_id] = true
         self:set_WS_ID(ws_id)
 
+
+        --print comp keys 
+        for k, v in pairs(self.clients) do
+            print("Client Key:", k, "Value:", v)
+        end
+
         local hadRedisState = false
         -- Load persisted client state if Redis available
         if self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management and self.server.dawn_sockets_handler.state_management.redis and self.component_key then
@@ -329,7 +499,8 @@ end,
             if ok and val then
                 local decoded_ok, decoded = pcall(function() return cjson.decode(val) end)
                 if decoded_ok and type(decoded) == "table" then
-                    self.client_states[self.client_token or ws_id] = { state = decoded, _last_seen = os_time() }
+                    decoded._last_seen = os_time()
+                    self.client_states[self.client_token or ws_id] = decoded
                     hadRedisState = true
 
                     -- If reactive, generate patches for clientState and queue them
@@ -398,229 +569,263 @@ end,
         -- No removal from client_states here - retain for reconnect unless pruned
     end
 
-    -- Standardized redis-backed single-get helper (returns decoded table or nil)
-    local function redis_get_decoded(redis, key)
-        local ok, val = pcall(function() return redis:get(key) end)
-        if not ok or not val then return nil end
-        local dec_ok, dec = pcall(function() return cjson.decode(val) end)
-        if dec_ok and type(dec) == "table" then return dec end
+-- Standardized redis-backed single-get helper (returns decoded table or nil)
+local function redis_get_decoded(redis, key)
+    log(log_level.DEBUG, "[FunctionalComponent] 🔍 redis_get_decoded called for key: %s", tostring(key))
+    
+    local ok, val = pcall(function() 
+        log(log_level.DEBUG, "[FunctionalComponent] 🔍 Attempting redis:get('%s')", key)
+        return redis:get(key) 
+    end)
+    
+    log(log_level.DEBUG, "[FunctionalComponent] 🔍 redis:get pcall result - ok: %s, val type: %s, val: %s", 
+        tostring(ok), type(val), tostring(val))
+    
+    if not ok then
+        log(log_level.ERROR, "[FunctionalComponent] ❌ redis:get failed with error: %s", tostring(val))
+        return nil 
+    end
+    
+    if not val then
+        log(log_level.DEBUG, "[FunctionalComponent] 🔍 Key not found or nil value in Redis for key: %s", key)
+        return nil 
+    end
+    
+    log(log_level.DEBUG, "[FunctionalComponent] 🔍 Raw Redis value length: %d", #val)
+    
+    local dec_ok, dec = pcall(function() 
+        log(log_level.DEBUG, "[FunctionalComponent] 🔍 Attempting to JSON decode value")
+        return cjson.decode(val) 
+    end)
+    
+    log(log_level.DEBUG, "[FunctionalComponent] 🔍 JSON decode result - ok: %s, dec type: %s", 
+        tostring(dec_ok), type(dec))
+    
+    if not dec_ok then
+        log(log_level.ERROR, "[FunctionalComponent] ❌ JSON decode failed for key %s: %s", key, tostring(dec))
         return nil
     end
-
-    function new_component:getRedisClientState(client_token_or_ws_id, comp_key)
-        local state = {}
-
-        if self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management and self.server.dawn_sockets_handler.state_management.redis and self.component_key then
-            local redis = self.server.dawn_sockets_handler.state_management.redis
-            local key = string.format("client_state:%s:%s", comp_key or self.component_key, client_token_or_ws_id)
-            local decoded = redis_get_decoded(redis, key)
-            if decoded then
-                state = decoded
-            else
-                state = {}
-                local primeOk, primeErr = pcall(function()
-                    redis:set(key, cjson.encode(state))
-                    redis:expire(key, 86400)
-                end)
-                if not primeOk then
-                    log(log_level.WARN, "[FunctionalComponent] ⚠️ Redis SET (prime empty state) failed: %s", tostring(primeErr))
-                end
-            end
-        end
-
-        if type(state) ~= "table" then state = {} end
-        return state
+    
+    if type(dec) == "table" then 
+        -- Count table keys properly
+        local keyCount = 0
+        for _ in pairs(dec) do keyCount = keyCount + 1 end
+        log(log_level.DEBUG, "[FunctionalComponent] ✅ Successfully decoded table with %d keys for key: %s", 
+            keyCount, key)
+        return dec 
+    else
+        log(log_level.WARN, "[FunctionalComponent] ⚠️ Decoded value is not a table (type: %s) for key: %s", 
+            type(dec), key)
+        return nil
     end
+end
 
-    -- NEW: Get clientState (returns plain table). Manages parent merging if enabled.
-    function new_component:getClientState(ws_id)
-        -- If no token, try to borrow from parent
-        if not self.client_token and self.parent then
-            self.client_token = self.parent.client_token
-        end
+function new_component:getRedisClientState(client_token_or_ws_id, comp_key)
+    log(log_level.DEBUG, "[FunctionalComponent] 🔍 getRedisClientState called with:")
+    log(log_level.DEBUG, "[FunctionalComponent]   • client_token_or_ws_id: %s", tostring(client_token_or_ws_id))
+    log(log_level.DEBUG, "[FunctionalComponent]   • comp_key: %s", tostring(comp_key))
+    log(log_level.DEBUG, "[FunctionalComponent]   • self.component_key: %s", tostring(self.component_key))
+    
+    local state = {}
 
+    -- Check if all required components exist
+    local has_server = self.server ~= nil
+    local has_dawn_sockets_handler = has_server and self.server.dawn_sockets_handler ~= nil
+    local has_state_management = has_dawn_sockets_handler and self.server.dawn_sockets_handler.state_management ~= nil
+    local has_redis = has_state_management and self.server.dawn_sockets_handler.state_management.redis ~= nil
+    
+    log(log_level.DEBUG, "[FunctionalComponent] 🔍 Precondition checks:")
+    log(log_level.DEBUG, "[FunctionalComponent]   • self.server exists: %s", tostring(has_server))
+    log(log_level.DEBUG, "[FunctionalComponent]   • dawn_sockets_handler exists: %s", tostring(has_dawn_sockets_handler))
+    log(log_level.DEBUG, "[FunctionalComponent]   • state_management exists: %s", tostring(has_state_management))
+    log(log_level.DEBUG, "[FunctionalComponent]   • redis exists: %s", tostring(has_redis))
+    log(log_level.DEBUG, "[FunctionalComponent]   • self.component_key exists: %s", tostring(self.component_key ~= nil))
+
+    if has_server and has_dawn_sockets_handler and has_state_management and has_redis and self.component_key then
+        local redis = self.server.dawn_sockets_handler.state_management.redis
         
-
-        local key = self.client_token or ws_id
-        if not key then
-            return {}
-        end
-        -- ensure internal structure
-        local slot = self.client_states[key]
-        if not slot then
-            slot = { state = {}, _last_seen = os_time() }
-            self.client_states[key] = slot
-        else
-            slot._last_seen = os_time()
-        end
-
-        local clientState = slot.state
-
-        if self._parentClientStateEnabled and self.parent then
-            local parentClientState = (type(self.parent.getClientState) == "function") and self.parent:getClientState(ws_id) or nil
-            if type(parentClientState) == "table" then
-                -- To avoid copying/allocating a merged table in common case, embed parent under parent's component key
-                clientState[self.parent.component_key] = parentClientState
-            end
-        end
-
-        return clientState
-    end
-
-    -- NEW: Prune client_states to limit memory consumption.
-    -- maxEntries: maximum number of client entries to keep (evict oldest when exceeded)
-    -- maxAgeSeconds: maximum age (seconds); entries older than this are removed
-    function new_component:pruneClientStates(maxEntries, maxAgeSeconds)
-        maxEntries = tonumber(maxEntries) or 500
-        maxAgeSeconds = tonumber(maxAgeSeconds) or (24 * 3600)
-
-        local now = os_time()
-        local entries = {}
-        local count = 0
-
-        for token, slot in pairs(self.client_states) do
-            if type(slot) == "table" then
-                local last = slot._last_seen or 0
-                if now - last > maxAgeSeconds then
-                    self.client_states[token] = nil -- aged out
-                else
-                    count = count + 1
-                    entries[count] = { token = token, last = last }
-                end
-            else
-                -- garbage entry: remove
-                self.client_states[token] = nil
-            end
-        end
-
-        if #entries > maxEntries then
-            table.sort(entries, function(a, b) return a.last < b.last end) -- oldest first
-            local to_remove = #entries - maxEntries
-            for i = 1, to_remove do
-                self.client_states[entries[i].token] = nil
-            end
-        end
-        return true
-    end
-
-    -- NEW: setClientState updated to use slot structure, minimal allocations, patching, pruning and Redis persistence
-    function new_component:setClientState(ws_id, newState, comp_key)
-        assert(type(newState) == "table", "setClientState expects a table")
-
-        if not self.client_token and self.parent then
-            self.client_token = self.parent.client_token
-        end
-
-        local key = self.client_token or ws_id
-        if not key then
-            return {}
-        end
-
-        -- ensure slot exists
-        local slot = self.client_states[key]
-        if not slot then
-            slot = { state = {}, _last_seen = os_time() }
-            self.client_states[key] = slot
-        end
-
-        local clientState = slot.state or {}
-        local oldState = {}
-        if self.HTMLReactive.shallowCopy then
-            oldState = self.HTMLReactive.shallowCopy(clientState) or {}
-        else
-            -- conservative shallow copy
-            for k, v in pairs(clientState) do oldState[k] = v end
-        end
-
-        -- Merge newState into clientState (in-place)
-
-         self.client_states[key].state = self.client_states[key] and self.client_states[key].state  or {} 
+        -- Determine which component key to use
+        local actual_comp_key = comp_key or self.component_key
+        log(log_level.DEBUG, "[FunctionalComponent] 🔍 Using component key: %s", actual_comp_key)
         
-        for k, v in pairs(newState) do
-           self.client_states[key].state[k] = v
-        end
-
-        clientState = self.client_states[key].state
-        slot._last_seen = os_time()
-
-        -- Determine diffs (shallow) and generate patches if reactive
-        if self.view_mode == "html_reactive" and self.reactive_component then
-            local changed = false
-            for k, v in pairs(newState) do
-                local equals = (self.HTMLReactive.shallowEqual and self.HTMLReactive.shallowEqual(oldState[k], v)) or (oldState[k] == v)
-                if not equals then
-                    changed = true
-                    break
-                end
-            end
-
-            if changed then
-                local patches = {}
-                for k, v in pairs(newState) do
-                    -- local eq = (self.HTMLReactive.shallowEqual and self.HTMLReactive.shallowEqual(oldState[k], v)) or (oldState[k] == v)
-                    -- if not eq then
-                        table_insert(patches, {
-                            type = "update-var",
-                            path = {"clientState", k},
-                            value = v,
-                            varName = "clientState." .. k
-                        })
-                    -- end
-                end
-
-
-
-                if #patches > 0 then
-                    
-                    for _, patch in ipairs(patches) do
-                        patch.component = (self.server and self.server.get_patch_namespace) and self.server:get_patch_namespace(comp_key or self.component_key, patch.varName or patch.path) or nil
-                        patch.isClientOnly = true
-                    end
-
-                    local payload = {
-                        id = uuid.v4(),
-                        type = "patches",
-                        data = patches
-                    }
-
-                     if self.parent and self.parent.server and self.parent.server.shared_state and self.parent.server.shared_state.sockets then
-                            self.parent.server.shared_state.sockets:send_to_user(ws_id, payload)
-                        elseif self.server and self.server.shared_state and self.server.shared_state.sockets then
-                            self.server.shared_state.sockets:send_to_user(ws_id, payload)
-                        else
-                            log(log_level.WARN, "[FunctionalComponent] No socket layer available to send patches")
-                        end
-                end
-            end
-        end
-
-        -- Persist to Redis (only the state object)
-        if self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management and self.server.dawn_sockets_handler.state_management.redis and self.component_key then
-            local redis = self.server.dawn_sockets_handler.state_management.redis
-            local keyname = string.format("client_state:%s:%s", comp_key or self.component_key, key)
-            local ok, err = pcall(function()
-                redis:set(keyname, cjson.encode(clientState))
-                redis:expire(keyname, 86400)
+        local key = string.format("client_state:%s:%s", actual_comp_key, client_token_or_ws_id)
+        log(log_level.DEBUG, "[FunctionalComponent] 🔍 Generated Redis key: %s", key)
+        
+        local decoded = redis_get_decoded(redis, key)
+        
+        if decoded then
+            log(log_level.DEBUG, "[FunctionalComponent] ✅ Found existing state in Redis for key: %s", key)
+            state = decoded
+        else
+            log(log_level.DEBUG, "[FunctionalComponent] 🔍 No existing state found, creating empty state for key: %s", key)
+            state = {}
+            
+            -- Prime Redis with empty state
+            local primeOk, primeErr = pcall(function()
+                log(log_level.DEBUG, "[FunctionalComponent] 🔍 Priming Redis with empty state for key: %s", key)
+                local encoded = cjson.encode(state)
+                log(log_level.DEBUG, "[FunctionalComponent] 🔍 Empty state JSON: %s", encoded)
+                
+                redis:set(key, encoded)
+                redis:expire(key, 86400)
+                log(log_level.DEBUG, "[FunctionalComponent] ✅ Successfully primed Redis with empty state")
             end)
-            if not ok then
-                log(log_level.WARN, "[FunctionalComponent] ⚠️ Redis SET (client_state) failed: %s", tostring(err))
+            
+            if not primeOk then
+                log(log_level.WARN, "[FunctionalComponent] ⚠️ Redis SET (prime empty state) failed: %s", tostring(primeErr))
+                log(log_level.DEBUG, "[FunctionalComponent] 🔍 Redis connection might be down or misconfigured")
             end
         end
-
-        -- prune after updates to avoid unbounded growth
-        pcall(function() self:pruneClientStates(300, 24 * 3600) end)
-
-        return clientState
+    else
+        log(log_level.WARN, "[FunctionalComponent] ⚠️ Missing required dependencies for getRedisClientState:")
+        if not has_server then log(log_level.WARN, "[FunctionalComponent]   • self.server is nil") end
+        if not has_dawn_sockets_handler then log(log_level.WARN, "[FunctionalComponent]   • dawn_sockets_handler is nil") end
+        if not has_state_management then log(log_level.WARN, "[FunctionalComponent]   • state_management is nil") end
+        if not has_redis then log(log_level.WARN, "[FunctionalComponent]   • redis is nil") end
+        if not self.component_key then log(log_level.WARN, "[FunctionalComponent]   • self.component_key is nil") end
     end
 
-    function new_component:updateParentClientState(ws_id, newState)
-        assert(type(newState) == "table", "updateParentClientState expects a table")
-        if not self.parent then
-            log(log_level.WARN, "[FunctionalComponent] ⚠️ No parent component to update clientState")
-            return nil
+    if type(state) ~= "table" then 
+        log(log_level.WARN, "[FunctionalComponent] ⚠️ State is not a table (type: %s), converting to empty table", type(state))
+        state = {} 
+    end
+    
+    -- Count state keys properly
+    local stateKeyCount = 0
+    for _ in pairs(state) do stateKeyCount = stateKeyCount + 1 end
+    log(log_level.DEBUG, "[FunctionalComponent] 🔍 Returning state with %d keys", stateKeyCount)
+    return state
+end
+
+--- create getRedisComponentState to get component-wide state
+--- returns decoded table or nil
+--- comp_key: optional component key (defaults to self.component_key)
+--- if no component_key set, returns empty table
+--- usage: local state = self:getRedisComponentState("my_component_key")
+--- returns: table
+function new_component:getRedisComponentState(comp_key)
+    log(log_level.DEBUG, "[FunctionalComponent] 🔍 getRedisComponentState called with:")
+    log(log_level.DEBUG, "[FunctionalComponent]   • comp_key: %s", tostring(comp_key))
+    log(log_level.DEBUG, "[FunctionalComponent]   • self.component_key: %s", tostring(self.component_key))
+    
+    local state = {}
+
+    -- Check if all required components exist
+    local has_server = self.server ~= nil
+    local has_dawn_sockets_handler = has_server and self.server.dawn_sockets_handler ~= nil
+    local has_state_management = has_dawn_sockets_handler and self.server.dawn_sockets_handler.state_management ~= nil
+    local has_redis = has_state_management and self.server.dawn_sockets_handler.state_management.redis ~= nil
+    
+    log(log_level.DEBUG, "[FunctionalComponent] 🔍 Precondition checks for component state:")
+    log(log_level.DEBUG, "[FunctionalComponent]   • self.server exists: %s", tostring(has_server))
+    log(log_level.DEBUG, "[FunctionalComponent]   • dawn_sockets_handler exists: %s", tostring(has_dawn_sockets_handler))
+    log(log_level.DEBUG, "[FunctionalComponent]   • state_management exists: %s", tostring(has_state_management))
+    log(log_level.DEBUG, "[FunctionalComponent]   • redis exists: %s", tostring(has_redis))
+
+    if has_server and has_dawn_sockets_handler and has_state_management and has_redis then
+        local redis = self.server.dawn_sockets_handler.state_management.redis
+        
+        -- Determine which component key to use
+        local actual_comp_key = comp_key or self.component_key
+        log(log_level.DEBUG, "[FunctionalComponent] 🔍 Using component key: %s", tostring(actual_comp_key))
+        
+        if not actual_comp_key then
+            log(log_level.WARN, "[FunctionalComponent] ⚠️ getRedisComponentState called without component_key")
+            log(log_level.DEBUG, "[FunctionalComponent] 🔍 comp_key param: %s, self.component_key: %s", 
+                tostring(comp_key), tostring(self.component_key))
+            return {}
         end
-        return self.parent:setClientState(ws_id, newState)
+        
+        local keyname = string.format("component_state:%s", actual_comp_key)
+        log(log_level.DEBUG, "[FunctionalComponent] 🔍 Generated Redis key: %s", keyname)
+        
+        local decoded = redis_get_decoded(redis, keyname)
+        
+        if decoded then
+            log(log_level.DEBUG, "[FunctionalComponent] ✅ Found existing component state in Redis for key: %s", keyname)
+            state = decoded
+        else
+            log(log_level.DEBUG, "[FunctionalComponent] 🔍 No existing component state found, creating empty state for key: %s", keyname)
+            state = {}
+            
+            -- Prime Redis with empty state
+            local primeOk, primeErr = pcall(function()
+                log(log_level.DEBUG, "[FunctionalComponent] 🔍 Priming Redis with empty component state for key: %s", keyname)
+                local encoded = cjson.encode(state)
+                log(log_level.DEBUG, "[FunctionalComponent] 🔍 Empty component state JSON: %s", encoded)
+                
+                redis:set(keyname, encoded)
+                redis:expire(keyname, 86400)
+                log(log_level.DEBUG, "[FunctionalComponent] ✅ Successfully primed Redis with empty component state")
+            end)
+            
+            if not primeOk then
+                log(log_level.WARN, "[FunctionalComponent] ⚠️ Redis SET (prime empty component state) failed: %s", tostring(primeErr))
+                log(log_level.DEBUG, "[FunctionalComponent] 🔍 Possible Redis connection issue or permissions problem")
+            end
+        end
+    else
+        log(log_level.WARN, "[FunctionalComponent] ⚠️ Missing required dependencies for getRedisComponentState:")
+        if not has_server then log(log_level.WARN, "[FunctionalComponent]   • self.server is nil") end
+        if not has_dawn_sockets_handler then log(log_level.WARN, "[FunctionalComponent]   • dawn_sockets_handler is nil") end
+        if not has_state_management then log(log_level.WARN, "[FunctionalComponent]   • state_management is nil") end
+        if not has_redis then log(log_level.WARN, "[FunctionalComponent]   • redis is nil") end
     end
+
+    if type(state) ~= "table" then 
+        log(log_level.WARN, "[FunctionalComponent] ⚠️ Component state is not a table (type: %s), converting to empty table", type(state))
+        state = {} 
+    end
+    
+    -- Count component state keys properly
+    local stateKeyCount = 0
+    for _ in pairs(state) do stateKeyCount = stateKeyCount + 1 end
+    log(log_level.DEBUG, "[FunctionalComponent] 🔍 Returning component state with %d keys", stateKeyCount)
+    return state
+end
+
+-- Optional helper function for counting keys
+function new_component:countTableKeys(tbl)
+    if type(tbl) ~= "table" then return 0 end
+    local count = 0
+    for _ in pairs(tbl) do count = count + 1 end
+    return count
+end
+
+-- Optional: Add this validation function to debug Redis connection
+function new_component:validateRedisConnection()
+    log(log_level.DEBUG, "[FunctionalComponent] 🔍 Validating Redis connection...")
+    
+    if self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management then
+        local redis = self.server.dawn_sockets_handler.state_management.redis
+        if redis then
+            local ok, result = pcall(function() 
+                return redis:ping() 
+            end)
+            log(log_level.DEBUG, "[FunctionalComponent] 🔍 Redis ping result: ok=%s, result=%s", 
+                tostring(ok), tostring(result))
+            return ok and result == "PONG"
+        else
+            log(log_level.WARN, "[FunctionalComponent] ⚠️ Redis object is nil")
+        end
+    else
+        log(log_level.WARN, "[FunctionalComponent] ⚠️ Missing Redis dependencies")
+    end
+    return false
+end
+
+
+
+
+-- Helper function to get table keys as array
+ function tableKeys(tbl)
+    local keys = {}
+    for k, _ in pairs(tbl or {}) do
+        table.insert(keys, tostring(k))
+    end
+    return keys
+end
+
 
     function new_component:sendHTMLClientOperations(ws_id, ops)
         assert(type(ops) == "table", "browserOps expects a table of operations")
@@ -645,63 +850,6 @@ end,
         else
             -- fallback synchronous call if async not present
             pcall(callback, ...)
-        end
-    end
-
-    function new_component:sendClientPatches(ws_id, state_changes)
-        assert(type(state_changes) == "table", "sendClientPatches expects a table of state changes")
-        assert(self.component_key, "Component key must be set before sending patches")
-
-        local clientState = self:getClientState(ws_id)
-
-        -- merge state changes into client state
-        for k, v in pairs(state_changes) do
-            clientState[k] = v
-        end
-
-        -- persist in internal slot
-        local key = self.client_token or ws_id
-        self.client_states[key] = self.client_states[key] or { state = clientState, _last_seen = os_time() }
-        self.client_states[key].state = clientState
-        self.client_states[key]._last_seen = os_time()
-
-        -- Generate patches using reactive_component.setState if available
-        local patches = {}
-        if self.reactive_component and type(self.reactive_component.setState) == "function" then
-            patches = self.reactive_component.setState(state_changes) or {}
-        end
-
-        for _, patch in ipairs(patches) do
-            patch.component = (self.server and self.server.get_patch_namespace) and self.server:get_patch_namespace(self.component_key, patch.varName or patch.path) or nil
-            patch.isClientOnly = true
-        end
-
-        if #patches > 0 then
-            local payload = {
-                id = uuid.v4(),
-                type = "patches",
-                data = patches
-            }
-            if self.parent and self.parent.server and self.parent.server.shared_state and self.parent.server.shared_state.sockets then
-                self.parent.server.shared_state.sockets:send_to_user(ws_id, payload)
-            elseif self.server and self.server.shared_state and self.server.shared_state.sockets then
-                self.server.shared_state.sockets:send_to_user(ws_id, payload)
-            else
-                log(log_level.WARN, "[FunctionalComponent] No socket layer available to send patches")
-            end
-        end
-
-        -- Persist to Redis if available
-        if self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management and self.server.dawn_sockets_handler.state_management.redis then
-            local redis = self.server.dawn_sockets_handler.state_management.redis
-            local keyname = string.format("client_state:%s:%s", self.component_key, ws_id)
-            local ok, err = pcall(function()
-                redis:set(keyname, cjson.encode(clientState))
-                redis:expire(keyname, 86400)
-            end)
-            if not ok then
-                log(log_level.WARN, "[FunctionalComponent] ⚠️ Redis SET (client_state) failed: %s", tostring(err))
-            end
         end
     end
 
@@ -751,210 +899,1146 @@ end,
         end
     end
 
-    function new_component:init(callback)
-        assert(type(callback) == "function", "Init callback must be a function.")
+-- create self:setComponentState("route_"..k, compState) to set component-wide state
+function new_component:setComponentState(comp_key, newState)
+    assert(type(newState) == "table", "setComponentState expects a table")
 
-        if next(self.style.inline) then
-            self.props.style = css_helper.style_to_inline(self.style.inline)
+    if not comp_key then
+        log(log_level.WARN, "[FunctionalComponent] ⚠️ setComponentState called without component_key")
+        return {}
+    end
+
+    self:setState(newState)
+    return newState
+end
+
+
+
+function new_component:pruneClientStates(max_count, max_age)
+    print("[DEBUG] pruneClientStates called")
+    print("[DEBUG]   max_count:", max_count)
+    print("[DEBUG]   max_age:", max_age)
+    
+    local current_time = os_time()
+    local to_remove = {}
+    local count = 0
+    
+    for key, slot in pairs(self.client_states) do
+        count = count + 1
+        
+        -- Get the _last_seen from the slot (it should be at top level now)
+        local last_seen = slot._last_seen
+        
+        if last_seen and (current_time - last_seen) > max_age then
+            table.insert(to_remove, key)
+            print("[DEBUG]   Marked for removal (age):", key, "age:", current_time - last_seen)
         end
-
-        local class_result = css_helper.style_to_class(self.style.css, self.scope_id)
-        if class_result.class and class_result.class ~= "" then
-            self.props.class = (self.props.class and (self.props.class .. " ") or "") .. class_result.class
+    end
+    
+    -- If still over count limit, remove oldest
+    if count > max_count then
+        local sorted = {}
+        for key, slot in pairs(self.client_states) do
+            table.insert(sorted, {key = key, last_seen = slot._last_seen or 0})
         end
-        self.collected_css = class_result.css_content
-
-        -- Redis component state load (preserve existing API)
-        if self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management and self.server.dawn_sockets_handler.state_management.redis and self.component_key then
-            local redis = self.server.dawn_sockets_handler.state_management.redis
-            local key = "component_state:" .. self.component_key
-            local ok, val = pcall(function() return redis:get(key) end)
-            if ok and val then
-                local decoded_ok, decoded = pcall(function() return cjson.decode(val) end)
-                if decoded_ok and type(decoded) == "table" then
-                    self.state = decoded
-                end
+        
+        table.sort(sorted, function(a, b) return a.last_seen < b.last_seen end)
+        
+        for i = 1, count - max_count do
+            if sorted[i] and not tableContains(to_remove, sorted[i].key) then
+                table.insert(to_remove, sorted[i].key)
+                print("[DEBUG]   Marked for removal (count):", sorted[i].key)
             end
         end
+    end
+    
+    -- Remove marked keys
+    for _, key in ipairs(to_remove) do
+        self.client_states[key] = nil
+    end
+    
+    print("[DEBUG]   Removed", #to_remove, "client states")
+end
 
-        if self.view_mode == "lustache" then
-            callback(self.children, self.props, self.style, self:getClientState(self._ws_id))
-        elseif self.view_mode == "html_reactive" then
-            local initial_vdom_builder = callback(
-                self.server,
-                self.children,
-                self.props,
-                self.style,
-                self.HTMLReactive,
-                self.collected_js_scripts,
-                self:getClientState(self._ws_id)
+
+
+-- Helper function to get value from path in a table
+local function getByPath(tbl, path)
+    if not path or path == "" then return tbl end
+    local parts = {}
+    for part in path:gmatch("[^%.]+") do
+        table.insert(parts, part)
+    end
+    
+    local current = tbl
+    for _, part in ipairs(parts) do
+        if type(current) ~= "table" then return nil end
+        current = current[part]
+        if current == nil then return nil end
+    end
+    return current
+end
+
+-- Helper function to set value at path in a table
+local function setByPath(tbl, path, value)
+    if not path or path == "" then 
+        -- Clear and replace the entire table
+        for k in pairs(tbl) do
+            tbl[k] = nil
+        end
+        for k, v in pairs(value) do
+            tbl[k] = v
+        end
+        return
+    end
+    
+    local parts = {}
+    for part in path:gmatch("[^%.]+") do
+        table.insert(parts, part)
+    end
+    
+    local current = tbl
+    for i = 1, #parts - 1 do
+        local part = parts[i]
+        if current[part] == nil then
+            current[part] = {}
+        elseif type(current[part]) ~= "table" then
+            current[part] = {}
+        end
+        current = current[part]
+    end
+    
+    local lastPart = parts[#parts]
+    current[lastPart] = value
+end
+
+-- Helper function to deep copy table (avoid reference issues)
+local function deepCopy(orig)
+    local copy
+    if type(orig) == "table" then
+        copy = {}
+        for orig_key, orig_value in pairs(orig) do
+            copy[deepCopy(orig_key)] = deepCopy(orig_value)
+        end
+        setmetatable(copy, deepCopy(getmetatable(orig)))
+    else
+        copy = orig
+    end
+    return copy
+end
+
+function new_component:setClientState(ws_id, updater, comp_key)
+    -- ------------------------------------------------------------------------
+    -- 1. Fast path: no operation if updater is empty or nil
+    -- ------------------------------------------------------------------------
+    if updater == nil then
+        return {}
+    end
+    if type(updater) == "table" and next(updater) == nil then
+        return {}
+    end
+
+    -- ------------------------------------------------------------------------
+    -- 2. Localise frequently used functions / tables for speed
+    -- ------------------------------------------------------------------------
+    local client_states = self.client_states
+    local reactive = self.reactive_component
+    local server = self.server
+    local log = self.server and self.server.logger and self.server.logger.log
+    local os_time = os.time
+    local deepCopy = deepCopy   -- assumes deepCopy is a local upvalue (already defined)
+    local cjson_encode = cjson.encode
+    local type = type
+    local pairs = pairs
+    local ipairs = ipairs
+    local table_insert = table.insert
+
+    -- ------------------------------------------------------------------------
+    -- 3. Determine storage key (client_token or ws_id)
+    -- ------------------------------------------------------------------------
+    local key = self.client_token or ws_id
+
+    print(" ws_id key : ", ws_id, self.client_token)
+    if not key then
+        if log then log(log_level.WARN, "[setClientState] No client key available") end
+        return {}
+    end
+
+    -- ------------------------------------------------------------------------
+    -- 4. Get current client state (always stored flat, no nesting)
+    -- ------------------------------------------------------------------------
+    local slot = client_states[key]
+    local currentState
+    if slot then
+        -- slot is the raw state table (no extra nesting)
+        currentState = slot
+    else
+        currentState = {}
+        client_states[key] = currentState
+    end
+
+    -- ------------------------------------------------------------------------
+    -- 5. Prepare variables
+    -- ------------------------------------------------------------------------
+    local patches = {}
+    local newState
+
+    -- ------------------------------------------------------------------------
+    -- 6. Process updater based on its type
+    -- ------------------------------------------------------------------------
+    if type(updater) == "table" and updater._operation then
+        -- 6a. CRUD operation – delegate to reactive component
+        if reactive and reactive.crud then
+            patches = reactive.crud(
+                updater._operation,
+                updater._target,
+                updater._data,
+                updater._options or {},
+                currentState and currentState and currentState or {}
+            ) or {}
+        end
+        -- The reactive component modifies currentState directly,
+        -- so we can just reuse currentState as the new state.
+        newState = currentState
+
+    elseif type(updater) == "function" then
+        -- 6b. Function updater – call with a shallow copy of current state
+        --     (shallow copy is enough because we only need to detect changes)
+        local oldCopy = {}
+        for k, v in pairs(currentState) do
+            oldCopy[k] = v
+        end
+        local updated = updater(oldCopy)
+        if type(updated) ~= "table" then
+            if log then log(log_level.WARN, "[setClientState] updater function returned non-table") end
+            return {}
+        end
+        newState = updated
+
+        -- Apply changes to the reactive component (if available)
+        if reactive and reactive.setClientState then
+            patches = reactive.setClientState(newState) or {}
+        end
+
+        -- Update the stored state
+        for k in pairs(currentState) do
+            currentState[k] = nil
+        end
+        for k, v in pairs(newState) do
+            currentState[k] = v
+        end
+
+    else
+        -- 6c. Partial table – merge into current state
+        newState = currentState   -- we modify in place
+        for k, v in pairs(updater) do
+            currentState[k] = v
+        end
+
+        if reactive and reactive.setClientState then
+            patches = reactive.setClientState(updater) or {}
+        end
+    end
+
+    -- Update last seen timestamp
+    currentState._last_seen = os_time()
+
+    -- ------------------------------------------------------------------------
+    -- 7. Add component namespace to patches (if any)
+    -- ------------------------------------------------------------------------
+    local patch_key = comp_key or self.component_key
+    if patch_key and #patches > 0 and server and server.get_patch_namespace then
+        for _, patch in ipairs(patches) do
+            patch.component = server:get_patch_namespace(
+                patch_key,
+                patch.varName or patch.path or patch.cleanPath or ""
             )
+            -- Ensure client‑state flags are present
+            patch.isClientOnly = true
+            patch.isClientState = true
+        end
+    end
 
-            assert(type(initial_vdom_builder) == "function",
-                "HTMLReactive init callback must return a VDOM builder function.")
+    -- ------------------------------------------------------------------------
+    -- 8. Send patches via the appropriate socket
+    -- ------------------------------------------------------------------------
+    if #patches > 0 then
+        local sockets
+        if self.parent and self.parent.server and self.parent.server.shared_state and self.parent.server.shared_state.sockets then
+            sockets = self.parent.server.shared_state.sockets
+        elseif server and server.shared_state and server.shared_state.sockets then
+            sockets = server.shared_state.sockets
+        end
+        if sockets then
+            sockets:send_to_user(ws_id, patches)
+        elseif log then
+            log(log_level.WARN, "[setClientState] No socket available to send patches")
+        end
+    end
 
-            self.reactive_render_fn = initial_vdom_builder
+    -- ------------------------------------------------------------------------
+    -- 9. Persist to Redis (only if Redis and component key are available)
+    -- ------------------------------------------------------------------------
+    if server and server.dawn_sockets_handler and
+       server.dawn_sockets_handler.state_management and
+       server.dawn_sockets_handler.state_management.redis and
+       patch_key then
 
-            if self.HTMLReactive.createComponentWithClientState then
-                self.reactive_component = self.HTMLReactive.createComponentWithClientState({
-                    render = function(state, props, clientState)
-                        local renderContext = {
-                            state = state,
-                            props = props,
-                            children = self.children,
-                            HTMLReactive = self.HTMLReactive,
-                            clientState = clientState or self:getClientState(self._ws_id)
-                        }
-                        return initial_vdom_builder(renderContext.state, renderContext.props, renderContext.children, renderContext.HTMLReactive,self.collected_js_scripts, renderContext.clientState)
-                    end,
-                    initialState = self.state,
-                    initialClientState = self:getClientState(self._ws_id),
-                    onClientStateChange = function(newClientState, oldClientState)
-                        log(log_level.DEBUG, "[FunctionalComponent] ClientState changed")
+        local redis = server.dawn_sockets_handler.state_management.redis
+        local redis_key = string.format("client_state:%s:%s", patch_key, key)
+
+        print("Redis key : ", redis_key)
+
+        -- Use pcall to avoid crashing on Redis errors
+        local ok, err = pcall(function()
+            redis:set(redis_key, cjson_encode(newState or currentState))
+            redis:expire(redis_key, 86400)   -- 24 hours
+        end)
+        if not ok and log then
+            log(log_level.WARN, "[setClientState] Redis persistence failed: %s", tostring(err))
+        end
+    end
+
+    -- ------------------------------------------------------------------------
+    -- 10. Prune old client states (lightweight call)
+    -- ------------------------------------------------------------------------
+    if type(self.pruneClientStates) == "function" then
+        self:pruneClientStates(300, 24 * 3600)   -- keep at most 300, max age 24h
+    end
+
+end
+
+-- Helper function to add CRUD support to setClientState calls
+function new_component:clientCRUD(operation, target, data, options)
+    print("[DEBUG][clientCRUD] Creating client CRUD operation")
+    print(string.format("[DEBUG][clientCRUD] Operation: %s", operation))
+    print(string.format("[DEBUG][clientCRUD] Target: %s", target))
+    
+    -- Ensure target has cs. prefix for client state
+    local clientTarget = target
+    if type(target) == "string" and not target:match("^cs%.") then
+        clientTarget = "cs." .. target
+    end
+    
+    options = options or {}
+    options.isClientState = true
+    options.isClientOnly = true
+    
+    return {
+        _operation = operation,
+        _target = clientTarget,
+        _data = data,
+        _options = options
+    }
+end
+
+
+
+-- Fixed getClientState that doesn't nest state
+function new_component:getClientState(ws_id)
+    print("[DEBUG] getClientState called")
+    local key = self.client_token or ws_id
+    
+    if not key then
+        return {}
+    end
+    
+    -- Get from local storage
+    local slot = self.client_states[key]
+    if not slot then
+        return {}
+    end
+    
+    -- Extract clean state WITHOUT nesting
+    local cleanState = {}
+    
+    if slot.state and slot.state.state then
+        -- Double nested: slot.state.state
+        print("[DEBUG]   Found double nested state")
+        for k, v in pairs(slot.state.state) do
+            if k ~= "state" then  -- Skip any nested state properties
+                cleanState[k] = v
+            end
+        end
+    elseif slot.state then
+        -- Single nested: slot.state
+        print("[DEBUG]   Found single nested state")
+        for k, v in pairs(slot.state) do
+            if k ~= "state" then  -- Skip any nested state properties
+                cleanState[k] = v
+            end
+        end
+    else
+        -- No nesting
+        print("[DEBUG]   No nesting found")
+        for k, v in pairs(slot) do
+            if k ~= "state" and k ~= "_last_seen" then  -- Skip internal fields
+                cleanState[k] = v
+            end
+        end
+    end
+    
+    print("[DEBUG]   Clean state keys:", table.concat(tableKeys(cleanState), ", "))
+    return cleanState
+end
+
+-- Helper to clean up existing nested state
+function new_component:cleanupNestedState()
+    print("[DEBUG] Cleaning up nested state...")
+    for key, slot in pairs(self.client_states) do
+        local originalSlot = slot
+        
+        -- Keep flattening until no more nested state
+        local hasChanges = true
+        while hasChanges do
+            hasChanges = false
+            
+            -- Check for double nesting: slot.state.state
+            if slot.state and slot.state.state then
+                print("[DEBUG]   Flattening double nested state for key:", key)
+                slot.state = slot.state.state
+                hasChanges = true
+            end
+            
+            -- Check for single nesting: slot.state
+            if slot.state then
+                print("[DEBUG]   Flattening single nested state for key:", key)
+                -- Move all properties from slot.state to slot
+                for k, v in pairs(slot.state) do
+                    if k ~= "state" then  -- Don't copy nested state
+                        slot[k] = v
                     end
+                end
+                slot.state = nil  -- Remove the nesting
+                hasChanges = true
+            end
+            
+            -- Remove any leftover state properties
+            if slot.state then
+                slot.state = nil
+                hasChanges = true
+            end
+        end
+        
+        -- Keep _last_seen if it exists
+        if not slot._last_seen and originalSlot._last_seen then
+            slot._last_seen = originalSlot._last_seen
+        end
+    end
+    print("[DEBUG] Nested state cleanup complete")
+end
+
+
+--- Generate CRUD patches by comparing old and new state
+function new_component:generateCRUDPatchesFromDiff(oldState, newState)
+    local patches = {}
+    
+    if not oldState or not newState then return patches end
+    
+    -- Helper to compare values
+    local function valuesEqual(a, b)
+        if type(a) ~= type(b) then return false end
+        if type(a) ~= "table" then return a == b end
+        
+        -- Simple table comparison for arrays
+        if #a > 0 and #b > 0 then
+            if #a ~= #b then return false end
+            for i = 1, #a do
+                if not valuesEqual(a[i], b[i]) then
+                    return false
+                end
+            end
+            return true
+        end
+        
+        -- For objects, compare key by key
+        local keys = {}
+        for k in pairs(a) do keys[k] = true end
+        for k in pairs(b) do keys[k] = true end
+        
+        for k in pairs(keys) do
+            if not valuesEqual(a[k], b[k]) then
+                return false
+            end
+        end
+        return true
+    end
+    
+    -- Compare top-level properties
+    for key, newValue in pairs(newState) do
+        local oldValue = oldState[key]
+        
+        if not valuesEqual(oldValue, newValue) then
+            if type(newValue) == "table" and #newValue > 0 then
+                -- Array/list changes
+                if not oldValue or #oldValue == 0 then
+                    -- Entire new list
+                    table.insert(patches, {
+                        operation = HTML.CRUD_OPERATIONS.SET,
+                        path = key,
+                        data = newValue,
+                        options = {isClientState = true}
+                    })
+                else
+                    -- Find differences between arrays
+                    local added = {}
+                    local removed = {}
+                    local updated = {}
+                    
+                    -- Simple diff for now - could be optimized
+                    table.insert(patches, {
+                        operation = HTML.CRUD_OPERATIONS.SET,
+                        path =  key,
+                        data = newValue,
+                        options = {isClientState = true}
+                    })
+                end
+            elseif type(newValue) == "table" then
+                -- Object changes
+                table.insert(patches, {
+                    operation = HTML.CRUD_OPERATIONS.SET,
+                    path = key,
+                    data = newValue,
+                    options = {isClientState = true}
                 })
             else
-                self.reactive_component = self.HTMLReactive.createComponent(function(state, props, children, HTMLReactive)
+                -- Primitive value
+                table.insert(patches, {
+                    operation = HTML.CRUD_OPERATIONS.SET,
+                    path = key,
+                    data = newValue,
+                    options = {isClientState = true}
+                })
+            end
+        end
+    end
+    
+    -- Check for removed keys
+    for key, oldValue in pairs(oldState) do
+        if newState[key] == nil then
+            table.insert(patches, {
+                operation = HTML.CRUD_OPERATIONS.DELETE,
+                path =  key,
+                data = nil,
+                options = {isClientState = true}
+            })
+        end
+    end
+    
+    return patches
+end
+
+--- Calculate new client state from CRUD operation
+function new_component:calculateNewClientState(currentState, crudOperation)
+    local operation = crudOperation._operation
+    local target = crudOperation._target:gsub("^cs%.", "")  -- Remove cs. prefix
+    local data = crudOperation._data
+    local options = crudOperation._options or {}
+    
+    local newState = {}
+    for k, v in pairs(currentState or {}) do
+        newState[k] = v
+    end
+    
+    if operation == HTML.CRUD_OPERATIONS.APPEND then
+        if not newState[target] then
+            newState[target] = {}
+        end
+        if type(data) == "table" then
+            for _, item in ipairs(data) do
+                table.insert(newState[target], item)
+            end
+        else
+            table.insert(newState[target], data)
+        end
+        
+        -- Update counter if specified
+        if options.updateCounter then
+            local counterResult = options.updateCounter(newState)
+            for k, v in pairs(counterResult or {}) do
+                newState[k] = v
+            end
+        end
+        
+    elseif operation == HTML.CRUD_OPERATIONS.SET then
+        newState[target] = data
+        
+    elseif operation == HTML.CRUD_OPERATIONS.UPDATE then
+        if type(newState[target]) == "table" and type(data) == "table" then
+            for k, v in pairs(data) do
+                newState[target][k] = v
+            end
+        else
+            newState[target] = data
+        end
+        
+    elseif operation == HTML.CRUD_OPERATIONS.DELETE then
+        if options.key then
+            if type(newState[target]) == "table" then
+                newState[target][options.key] = nil
+            end
+        elseif options.index and type(newState[target]) == "table" then
+            table.remove(newState[target], options.index)
+        elseif options.predicate and type(newState[target]) == "table" then
+            local newList = {}
+            for _, item in ipairs(newState[target]) do
+                if not options.predicate(item) then
+                    table.insert(newList, item)
+                end
+            end
+            newState[target] = newList
+        else
+            newState[target] = nil
+        end
+    end
+    
+    return newState
+end
+
+-- Helper to count keys in a table
+ function tableKeysCount(tbl)
+    local count = 0
+    for _ in pairs(tbl or {}) do
+        count = count + 1
+    end
+    return count
+end
+
+-- Helper function to get table keys as array
+function tableKeys(tbl)
+    local keys = {}
+    for k, _ in pairs(tbl or {}) do
+        table.insert(keys, tostring(k))
+    end
+    return keys
+end
+
+function new_component:updateParentClientState(ws_id, newState)
+    print("[updateParentClientState] Updating parent client state with:", newState)
+    assert(type(newState) == "table", "updateParentClientState expects a table")
+    if not self.parent then
+        log(log_level.WARN, "[FunctionalComponent] ⚠️ No parent component to update clientState")
+        return nil
+    end
+    
+    -- Check if parent has CRUD support
+    if self.parent.reactive_component and 
+       (self.parent.reactive_component.crud or self.parent.reactive_component.set) then
+
+        print("[updateParentClientState] Using CRUD operation to update parent client state")
+        -- Use CRUD operation if available
+        return self.parent:setClientState(ws_id, {
+            _operation = HTML.CRUD_OPERATIONS.UPDATE,
+            _target = self.parent:getClientState(ws_id),
+            _data = newState,
+            _options = {isClientState = true}
+        }, "update parent from child component")
+    else
+        -- Fall back to traditional update
+        return self.parent:setClientState(ws_id, newState, "secondary update from child component")
+    end
+end
+
+-- Enhanced setState with CRUD support
+-- Enhanced setState with CRUD support
+function new_component:setState(newState, opts)
+    -- print("[DEBUG][setState] === ENTERING setState ===")
+    -- print(string.format("[DEBUG][setState] Called with newState type: %s", type(newState)))
+    -- print(string.format("[DEBUG][setState] Component key: %s", tostring(self.component_key)))
+    -- print(string.format("[DEBUG][setState] Has server: %s", tostring(self.server ~= nil)))
+    -- print(string.format("[DEBUG][setState] Has reactive_component: %s", tostring(self.reactive_component ~= nil)))
+    
+    -- Allow both table and function syntax
+    if type(newState) ~= "table" and type(newState) ~= "function" then
+        print(string.format("[ERROR][setState] Invalid newState type: %s", type(newState)))
+        error("setState expects a table or function", 2)
+    end
+    
+    -- Check for client-only flag
+    if type(newState) == "table" and newState.isClientOnly then
+        print("[ERROR][setState] Attempted to persist client-only state")
+        error("Attempted to persist client-only state into component_state", 2)
+    end
+    
+    local patches = {}
+    print("[DEBUG][setState] Initialized empty patches array")
+    
+    -- Check if we have CRUD-enhanced component
+    local useCRUD = self.reactive_component and 
+                   (self.reactive_component.crud or 
+                    self.reactive_component.set or 
+                    self.reactive_component.append)
+    
+    print(string.format("[DEBUG][setState] useCRUD check result: %s", tostring(useCRUD)))
+
+    print(string.format("[DEBUG][setState] newState content: %s", 
+          type(newState) == "table" and cjson.encode(newState) or tostring(newState)))
+    
+    if useCRUD and type(newState) == "table" and newState._operation then
+        -- CRUD operation style update for normal state
+        -- print("[DEBUG][setState] Processing CRUD operation path")
+        -- print(string.format("[DEBUG][CRUD] Operation: %s", tostring(newState._operation)))
+        -- print(string.format("[DEBUG][CRUD] Target: %s", tostring(newState._target)))
+        -- print(string.format("[DEBUG][CRUD] Has data: %s", tostring(newState._data ~= nil)))
+        -- print(string.format("[DEBUG][CRUD] Has options: %s", tostring(newState._options ~= nil)))
+        
+        local operation = newState._operation
+        local target = newState._target
+        local data = newState._data
+        local options = newState._options or {}
+        
+        print("[DEBUG][CRUD] Calling reactive_component.crud()")
+        patches = self.reactive_component.crud(operation, target, data, options) or {}
+        print(string.format("[DEBUG][CRUD] Received %d patches from crud()", #patches))
+        
+    else
+        -- Traditional update
+        print("[DEBUG][setState] Processing traditional update path")
+        
+        -- Check if it's an updater function
+        if type(newState) == "function" then
+            print("[DEBUG][setState] Processing updater function")
+            print(string.format("[DEBUG][setState] Current state size: %d", 
+                  self.state and #self.state or 0))
+            
+            -- Call the updater function with current state
+            local currentStateCopy = {}
+            for k, v in pairs(self.state or {}) do
+                currentStateCopy[k] = v
+            end
+            print(string.format("[DEBUG][setState] Created copy with %d items", 
+                  #currentStateCopy))
+            
+            print("[DEBUG][setState] Calling updater function...")
+            local updatedState = newState(currentStateCopy)
+            print("[DEBUG][setState] Updater function returned : \n", cjson.encode(updatedState))
+            -- Validate the result
+            if type(updatedState) ~= "table" then
+                print(string.format("[ERROR][setState] Updater returned non-table: %s", 
+                      type(updatedState)))
+                error("Updater function must return a table", 2)
+            end
+            
+            print(string.format("[DEBUG][setState] Updater returned table with %d items", 
+                  #updatedState))
+            print("[DEBUG][setState] Calling reactive_component.setState() with updated state")
+            patches = self.reactive_component.setState(updatedState) or {}
+            print(string.format("[DEBUG][setState] Received %d patches from setState()", #patches))
+        else
+            -- It's a partial state object
+            print("[DEBUG][setState] Processing partial state object")
+            print(string.format("[DEBUG][setState] New state has %d keys", 
+                  newState and #newState or 0))
+            print("[DEBUG][setState] Calling reactive_component.setState() with newState")
+            patches = self.reactive_component.setState(newState) or {}
+            print(string.format("[DEBUG][setState] Received %d patches from setState()", #patches))
+        end
+    end
+    
+    -- Update component namespace for patches
+    if self.component_key and #patches > 0 then
+        print(string.format("[DEBUG][setState] Updating namespace for %d patches", #patches))
+        for i, patch in ipairs(patches) do
+            print(string.format("[DEBUG][setState] Processing patch %d/%d", i, #patches))
+            print(string.format("[DEBUG][setState] Patch path: %s", 
+                  tostring(patch.varName or patch.path)))
+            
+            if self.server and self.server.get_patch_namespace then
+                patch.component = self.server:get_patch_namespace(
+                    self.component_key, 
+                    patch.varName or patch.path
+                )
+                print(string.format("[DEBUG][setState] Set component namespace to: %s", 
+                      tostring(patch.component)))
+            else
+                print("[DEBUG][setState] No get_patch_namespace method available")
+            end
+        end
+    else
+        print(string.format("[DEBUG][setState] No patches or no component_key. Patches: %d, Key: %s", 
+              #patches, tostring(self.component_key)))
+    end
+    
+    -- Persist to Redis if needed
+    if self.server and self.server.dawn_sockets_handler and 
+       self.server.dawn_sockets_handler.state_management and 
+       self.server.dawn_sockets_handler.state_management.redis and 
+       self.component_key then
+        
+        print("[DEBUG][Redis] Starting Redis persistence")
+        print(string.format("[DEBUG][Redis] Component key: %s", self.component_key))
+        
+        local redis = self.server.dawn_sockets_handler.state_management.redis
+        local key = "component_state:" .. self.component_key
+        print(string.format("[DEBUG][Redis] Redis key: %s", key))
+        
+        local ok, err = pcall(function()
+            -- Get current state from reactive component (after update)
+            local currentState = self.state or {}
+            if self.reactive_component and self.reactive_component.getNormalState then
+                print("[DEBUG][Redis] Getting normal state from reactive component")
+                currentState = self.reactive_component:getNormalState()
+            end
+            
+            print(string.format("[DEBUG][Redis] State size for persistence: %d", #currentState))
+            
+            local jsonData = cjson.encode(currentState)
+            print(string.format("[DEBUG][Redis] JSON size: %d bytes", #jsonData))
+            
+            redis:set(key, jsonData)
+            print("[DEBUG][Redis] SET command executed")
+            
+            redis:expire(key, 86400)
+            print("[DEBUG][Redis] EXPIRE command executed (86400 seconds)")
+        end)
+        
+        if not ok then
+            print(string.format("[WARN][Redis] Redis SET failed: %s", tostring(err)))
+            log(log_level.WARN, "[FunctionalComponent] ⚠️ Redis SET failed: %s", tostring(err))
+        else
+            print("[DEBUG][Redis] Redis persistence successful")
+        end
+    else
+        print("[DEBUG][Redis] Skipping Redis persistence - missing:")
+        print(string.format("  - server: %s", tostring(self.server ~= nil)))
+        print(string.format("  - dawn_sockets_handler: %s", 
+              tostring(self.server and self.server.dawn_sockets_handler ~= nil)))
+        print(string.format("  - state_management: %s", 
+              tostring(self.server and self.server.dawn_sockets_handler and 
+                      self.server.dawn_sockets_handler.state_management ~= nil)))
+        print(string.format("  - redis: %s", 
+              tostring(self.server and self.server.dawn_sockets_handler and 
+                      self.server.dawn_sockets_handler.state_management and 
+                      self.server.dawn_sockets_handler.state_management.redis ~= nil)))
+        print(string.format("  - component_key: %s", tostring(self.component_key)))
+    end
+    
+    -- Send patches
+    if #patches > 0 then
+        print(string.format("[DEBUG][Patch] Sending %d patches", #patches))
+        
+        -- Push patches individually or as array based on server configuration
+        for i, patch in ipairs(patches) do
+            print(string.format("[DEBUG][Patch] Processing patch %d/%d", i, #patches))
+            
+            local patchQueue = nil
+            if self.parent and self.parent.server and self.parent.server.patch_queue then
+                patchQueue = self.parent.server.patch_queue
+                print("[DEBUG][Patch] Using parent server patch_queue")
+            elseif self.server and self.server.patch_queue then
+                patchQueue = self.server.patch_queue
+                print("[DEBUG][Patch] Using self server patch_queue")
+            end
+            
+            if patchQueue then
+                print(string.format("[DEBUG][Patch] Pushing patch to queue (type: %s)", 
+                      type(patchQueue.push)))
+                patchQueue:push(patch)
+                print("[DEBUG][Patch] Patch pushed successfully")
+            else
+                print("[DEBUG][Patch] No patch queue available")
+                print(string.format("  - has parent: %s", tostring(self.parent ~= nil)))
+                print(string.format("  - parent has server: %s", 
+                      tostring(self.parent and self.parent.server ~= nil)))
+                print(string.format("  - parent has patch_queue: %s", 
+                      tostring(self.parent and self.parent.server and 
+                              self.parent.server.patch_queue ~= nil)))
+                print(string.format("  - self has server: %s", 
+                      tostring(self.server ~= nil)))
+                print(string.format("  - self has patch_queue: %s", 
+                      tostring(self.server and self.server.patch_queue ~= nil)))
+            end
+        end
+    else
+        print("[DEBUG][Patch] No patches to send")
+    end
+    
+    print(string.format("[DEBUG][setState] === EXITING setState (returning %d patches) ===", #patches))
+    return patches
+end
+-- Helper function to check if table contains element
+local function tableContains(table, element)
+    for _, value in pairs(table) do
+        if value == element then
+            return true
+        end
+    end
+    return false
+end
+
+function new_component:init(callback)
+    assert(type(callback) == "function", "Init callback must be a function.")
+
+    if next(self.style.inline) then
+        self.props.style = css_helper.style_to_inline(self.style.inline)
+    end
+
+    local class_result = css_helper.style_to_class(self.style.css, self.scope_id)
+    if class_result.class and class_result.class ~= "" then
+        self.props.class = (self.props.class and (self.props.class .. " ") or "") .. class_result.class
+    end
+    self.collected_css = class_result.css_content
+
+    -- Redis component state load (preserve existing API)
+    if self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management and self.server.dawn_sockets_handler.state_management.redis and self.component_key then
+        local redis = self.server.dawn_sockets_handler.state_management.redis
+        local key = "component_state:" .. self.component_key
+        local ok, val = pcall(function() return redis:get(key) end)
+        if ok and val then
+            local decoded_ok, decoded = pcall(function() return cjson.decode(val) end)
+            if decoded_ok and type(decoded) == "table" then
+                self.state = decoded
+            end
+        end
+    end
+
+    if self.view_mode == "lustache" then
+        callback(self.children, self.props, self.style, self:getClientState(self._ws_id))
+    elseif self.view_mode == "html_reactive" then
+        local initial_vdom_builder = callback(
+            self.server,
+            self.children,
+            self.props,
+            self.style,
+            self.HTMLReactive,
+            self.collected_js_scripts,
+            self:getClientState(self._ws_id)
+        )
+
+        assert(type(initial_vdom_builder) == "function",
+            "HTMLReactive init callback must return a VDOM builder function.")
+
+        self.reactive_render_fn = initial_vdom_builder
+
+        -- Check if we have CRUD-enhanced component creation
+        if self.HTMLReactive.createCRUDEnhancedComponent then
+            print("[DEBUG] Creating CRUD-enhanced component")
+            self.reactive_component = self.HTMLReactive.createCRUDEnhancedComponent(
+                function(state, props, clientState)
                     local renderContext = {
                         state = state,
                         props = props,
-                        children = children,
-                        HTMLReactive = HTMLReactive,
-                        clientState = self:getClientState(self._ws_id)
+                        children = self.children,
+                        HTMLReactive = self.HTMLReactive,
+                        clientState = clientState or self:getClientState(self._ws_id)
                     }
-                    return initial_vdom_builder(renderContext.state, renderContext.props, renderContext.children, renderContext.HTMLReactive, self.collected_js_scripts, renderContext.clientState)
-                end, self.state)
-            end
-
-            self.reactive_root_node = self:render()
-
-            -- utils (kept API but optimized implementation)
-            self.utils = {
-                arrayPush = function(arr, item)
-                    if not item then return arr or {} end
-                    if not arr then return {item} end
-                    local newArr = {}
-                    for i = 1, #arr do newArr[i] = arr[i] end
-                    newArr[#newArr+1] = item
-                    return newArr
+                    return initial_vdom_builder(renderContext.state, renderContext.props, 
+                        renderContext.children, renderContext.HTMLReactive,
+                        self.collected_js_scripts, renderContext.clientState)
                 end,
-
-                arrayUpdate = function(arr, predicate, updater)
-                    if not arr then return {} end
-                    local newArr, changed = {}, false
-                    for i = 1, #arr do
-                        local item = arr[i]
-                        if item and predicate(item) then
-                            newArr[#newArr+1] = updater(item)
-                            changed = true
-                        else
-                            newArr[#newArr+1] = item
-                        end
-                    end
-                    return changed and newArr or arr
+                self.state,
+                self:getClientState(self._ws_id)
+            )
+        elseif self.HTMLReactive.createComponentWithClientState then
+            print("[DEBUG] Creating component with client state")
+            self.reactive_component = self.HTMLReactive.createComponentWithClientState({
+                render = function(state, props, clientState)
+                    local renderContext = {
+                        state = state,
+                        props = props,
+                        children = self.children,
+                        HTMLReactive = self.HTMLReactive,
+                        clientState = clientState or self:getClientState(self._ws_id)
+                    }
+                    return initial_vdom_builder(renderContext.state, renderContext.props, 
+                        renderContext.children, renderContext.HTMLReactive,
+                        self.collected_js_scripts, renderContext.clientState)
                 end,
-
-                arrayRemove = function(arr, predicate)
-                    if not arr then return {} end
-                    local newArr, removed = {}, false
-                    for i = 1, #arr do
-                        local item = arr[i]
-                        if item and not predicate(item) then
-                            newArr[#newArr+1] = item
-                        else
-                            removed = true
-                        end
-                    end
-                    return removed and newArr or arr
-                end,
-
-                arrayDedupe = function(arr, keyFn)
-                    if not arr then return {} end
-                    local seen, newArr = {}, {}
-                    keyFn = keyFn or function(item) return item.id end
-                    for i = 1, #arr do
-                        local item = arr[i]
-                        if item then
-                            local key = keyFn(item)
-                            if key and not seen[key] then
-                                seen[key] = true
-                                newArr[#newArr+1] = item
-                            end
-                        end
-                    end
-                    return newArr
-                end,
-
-                arrayMap = function(arr, mapper)
-                    if not arr then return {} end
-                    local newArr = {}
-                    for i = 1, #arr do
-                        local item = arr[i]
-                        newArr[i] = item and mapper(item, i) or nil
-                    end
-                    return newArr
+                initialState = self.state,
+                initialClientState = self:getClientState(self._ws_id),
+                onClientStateChange = function(newClientState, oldClientState)
+                    log(log_level.DEBUG, "[FunctionalComponent] ClientState changed")
                 end
-            }
-
-            if not self.setState then
-                self.setState = function(self_instance, newState, opts)
-                    assert(type(newState) == "table", "setState expects a table")
-
-                    for k, v in pairs(newState) do
-                        self.state[k] = v
-                    end
-
-                    local patches = {}
-                    if self_instance.reactive_component and type(self_instance.reactive_component.setState) == "function" then
-                        patches = self_instance.reactive_component.setState(newState) or {}
-                    end
-
-                    if self_instance.component_key and #patches > 0 then
-                        for _, patch in ipairs(patches) do
-                            patch.component = (self_instance.server and self_instance.server.get_patch_namespace) and self_instance.server:get_patch_namespace(self_instance.component_key, patch.varName or patch.path) or nil
-                        end
-                    end
-
-                    if #patches > 0 then
-                        if self_instance.parent and self_instance.parent.server and self_instance.parent.server.patch_queue then
-                            self_instance.parent.server.patch_queue:push(patches)
-                        elseif self_instance.server and self_instance.server.patch_queue then
-                            self_instance.server.patch_queue:push(patches)
-                        end
-                    end
-
-                    if self_instance.server and self_instance.server.dawn_sockets_handler and self_instance.server.dawn_sockets_handler.state_management and self_instance.server.dawn_sockets_handler.state_management.redis and self_instance.component_key then
-                        local redis = self_instance.server.dawn_sockets_handler.state_management.redis
-                        local key = "component_state:" .. self_instance.component_key
-                        local ok, err = pcall(function()
-                            redis:set(key, cjson.encode(self.state))
-                            redis:expire(key, 86400)
-                        end)
-                        if not ok then
-                            log(log_level.WARN, "[FunctionalComponent] ⚠️ Redis SET failed: %s", tostring(err))
-                        end
-                    end
-
-                    return patches
-                end
-            end
-
-            if not self.patch and type(self.methods) == "table" then
-                self.patch = function(self_instance, ws_id, method, args)
-                    local fn = self_instance.methods[method]
-                    if type(fn) == "function" then
-                        return fn(self_instance, ws_id, args)
-                    else
-                        log(log_level.WARN, "[FunctionalComponent] ⚠️ Method '%s' not found.", tostring(method))
-                        return {}
-                    end
-                end
-            end
+            })
         else
-            callback(self.children, self.props, self.style, self.htmlBuilder, self:getClientState(self._ws_id))
-            assert(#self.children > 0, "HTMLBuilder mode requires 'children' to be populated.")
+            print("[DEBUG] Creating basic component")
+            self.reactive_component = self.HTMLReactive.createComponent(function(state, props, children, HTMLReactive)
+                local renderContext = {
+                    state = state,
+                    props = props,
+                    children = children,
+                    HTMLReactive = HTMLReactive,
+                    clientState = self:getClientState(self._ws_id)
+                }
+                return initial_vdom_builder(renderContext.state, renderContext.props, 
+                    renderContext.children, renderContext.HTMLReactive, 
+                    self.collected_js_scripts, renderContext.clientState)
+            end, self.state)
         end
+
+        self.reactive_root_node = self:render()
+
+        -- Enhanced utils with CRUD-like operations
+        self.utils = {
+            -- Array operations
+            arrayPush = function(arr, item)
+                if not item then return arr or {} end
+                if not arr then return {item} end
+                local newArr = {}
+                for i = 1, #arr do newArr[i] = arr[i] end
+                newArr[#newArr+1] = item
+                return newArr
+            end,
+
+            arrayUpdate = function(arr, predicate, updater)
+                if not arr then return {} end
+                local newArr, changed = {}, false
+                for i = 1, #arr do
+                    local item = arr[i]
+                    if item and predicate(item) then
+                        newArr[#newArr+1] = updater(item)
+                        changed = true
+                    else
+                        newArr[#newArr+1] = item
+                    end
+                end
+                return changed and newArr or arr
+            end,
+
+            arrayRemove = function(arr, predicate)
+                if not arr then return {} end
+                local newArr, removed = {}, false
+                for i = 1, #arr do
+                    local item = arr[i]
+                    if item and not predicate(item) then
+                        newArr[#newArr+1] = item
+                    else
+                        removed = true
+                    end
+                end
+                return removed and newArr or arr
+            end,
+
+            arrayDedupe = function(arr, keyFn)
+                if not arr then return {} end
+                local seen, newArr = {}, {}
+                keyFn = keyFn or function(item) return item.id end
+                for i = 1, #arr do
+                    local item = arr[i]
+                    if item then
+                        local key = keyFn(item)
+                        if key and not seen[key] then
+                            seen[key] = true
+                            newArr[#newArr+1] = item
+                        end
+                    end
+                end
+                return newArr
+            end,
+
+            arrayMap = function(arr, mapper)
+                if not arr then return {} end
+                local newArr = {}
+                for i = 1, #arr do
+                    local item = arr[i]
+                    newArr[i] = item and mapper(item, i) or nil
+                end
+                return newArr
+            end,
+            
+            -- Object operations
+            objectSet = function(obj, key, value)
+                if not obj then return {} end
+                local newObj = {}
+                for k, v in pairs(obj) do
+                    newObj[k] = v
+                end
+                newObj[key] = value
+                return newObj
+            end,
+            
+            objectMerge = function(obj1, obj2)
+                local newObj = {}
+                for k, v in pairs(obj1 or {}) do
+                    newObj[k] = v
+                end
+                for k, v in pairs(obj2 or {}) do
+                    newObj[k] = v
+                end
+                return newObj
+            end,
+            
+            objectDelete = function(obj, key)
+                if not obj then return {} end
+                local newObj = {}
+                for k, v in pairs(obj) do
+                    if k ~= key then
+                        newObj[k] = v
+                    end
+                end
+                return newObj
+            end,
+            
+            objectClear = function(obj)
+                return {}
+            end,
+            
+            -- CRUD-style operations for reactive components
+            crud = function(operation, target, data, options)
+                if not self.reactive_component or not self.reactive_component.crud then
+                    error("CRUD operations not available for this component")
+                end
+                
+                -- Check if target is a table reference in our state
+                local resolvedTarget = target
+                if type(target) == "table" then
+                    -- Try to find the path to this table
+                    local path = HTML.tableToPath(target, 
+                        self.reactive_component.getNormalState and 
+                        self.reactive_component:getNormalState() or self.state)
+                    if path then
+                        resolvedTarget = path
+                    end
+                end
+                
+                return self.reactive_component.crud(operation, resolvedTarget, data, options or {})
+            end,
+            
+            set = function(target, value, options)
+                return self.utils.crud(HTML.CRUD_OPERATIONS.SET, target, value, options)
+            end,
+            
+            append = function(target, items, options)
+                return self.utils.crud(HTML.CRUD_OPERATIONS.APPEND, target, items, options)
+            end,
+            
+            prepend = function(target, items, options)
+                return self.utils.crud(HTML.CRUD_OPERATIONS.PREPEND, target, items, options)
+            end,
+            
+            delete = function(target, options)
+                return self.utils.crud(HTML.CRUD_OPERATIONS.DELETE, target, nil, options)
+            end,
+            
+            update = function(target, data, options)
+                return self.utils.crud(HTML.CRUD_OPERATIONS.UPDATE, target, data, options)
+            end,
+            
+            merge = function(target, data, options)
+                return self.utils.crud(HTML.CRUD_OPERATIONS.MERGE, target, data, options)
+            end,
+            
+            clear = function(target, options)
+                return self.utils.crud(HTML.CRUD_OPERATIONS.CLEAR, target, nil, options)
+            end
+        }
+        
+        if not self.patch and type(self.methods) == "table" then
+            self.patch = function(self_instance, ws_id, method, args)
+                local fn = self_instance.methods[method]
+                if type(fn) == "function" then
+                    return fn(self_instance, ws_id, args)
+                else
+                    log(log_level.WARN, "[FunctionalComponent] ⚠️ Method '%s' not found.", tostring(method))
+                    return {}
+                end
+            end
+        end
+    else
+        callback(self.children, self.props, self.style, self.htmlBuilder, self:getClientState(self._ws_id))
+        assert(#self.children > 0, "HTMLBuilder mode requires 'children' to be populated.")
     end
+end
 
     function new_component:broadcast_patches(patches_table)
         if not patches_table or type(patches_table) ~= "table" then return end
@@ -1046,7 +2130,10 @@ end,
         end
 
         if opts.include_patch_client ~= false then
-            table_insert(scripts, '<script src="/static/assets/js/patchClient.js" type="module"></script>')
+            -- table_insert(scripts, '<script src="/static/assets/js/patchClientHelper.js" type="module"></script>')
+            -- table_insert(scripts, '<script src="/static/assets/js/patchClientHelper2.js" type="module"></script>')
+            -- table_insert(scripts, '<script src="/static/assets/js/patchClient.js" type="module"></script>')
+            
             table_insert(scripts, '<script src="/static/assets/js/Fluid-Container.umd.min.js" type="module"></script>')
         end
         for _, js in ipairs(self.collected_js_scripts or {}) do
@@ -1095,7 +2182,7 @@ end,
                 local keyname = string.format("client_state:%s:%s", component.component_key, self.client_token or self._ws_id)
                 local loaded = redis_get_decoded(redis, keyname)
                 if loaded then
-                    component.client_states[self.client_token or self._ws_id] = { state = loaded, _last_seen = os_time() }
+                    component.client_states[self.client_token or self._ws_id] = loaded
                 end
             end
 
@@ -1214,20 +2301,20 @@ end,
         assert(self.reactive_render_fn, "No reactive_render_fn set, did you call init()?")
 
         local new_root = self:render()
-        local patches = self.HTMLReactive.diff(self.reactive_root_node, new_root)
-        self.reactive_root_node = new_root
+        -- local patches = self.HTMLReactive.diff(self.reactive_root_node, new_root)
+        -- self.reactive_root_node = new_root
 
-        if self.component_key and #patches > 0 then
-            for _, patch in ipairs(patches) do
-                patch.component = (self.server and self.server.get_patch_namespace) and self.server:get_patch_namespace(self.component_key, patch.varName or patch.path) or nil
-            end
-        end
+        -- if self.component_key and #patches > 0 then
+        --     for _, patch in ipairs(patches) do
+        --         patch.component = (self.server and self.server.get_patch_namespace) and self.server:get_patch_namespace(self.component_key, patch.varName or patch.path) or nil
+        --     end
+        -- end
 
-        if #patches > 0 and self.server and self.server.patch_queue then
-            self.server.patch_queue:push(patches)
-        end
+        -- if #patches > 0 and self.server and self.server.patch_queue then
+        --     self.server.patch_queue:push(patches)
+        -- end
 
-        return patches
+        return new_root
     end
 
     return new_component

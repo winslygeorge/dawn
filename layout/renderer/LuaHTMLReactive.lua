@@ -147,7 +147,7 @@ function HTML.bindText(varName, content, attrs)
  attrs.class = (attrs.class and attrs.class .. " " or "") .. "reactive-var-" .. varName
  return HTML.e("span", attrs, content)
 end
-
+    
 
 --------------------------------------------------
 -- 🔄 Diff Engine
@@ -158,6 +158,9 @@ end
 local function path_to_selector(path)
   -- Convert VDOM path to CSS selector for client
   -- Example: root.children[1].children[2] → :scope > *:nth-child(1) > *:nth-child(2)
+  if type(path) ~= "string" then
+    return ":scope"
+  end
   local selector = path:gsub("^root", ":scope")
   selector = selector:gsub("%.children%[", " > *:nth-child("):gsub("%]", ")")
   return selector
@@ -2475,6 +2478,1278 @@ function HTML.shallowEqual(a, b)
     return true
 end
 
+
+
+--------------------------------------------------
+-- 🧬 Component System (Reactive)
+--------------------------------------------------
+
+
+--- Find differences between two tables recursively
+--- @param oldTable table Old state
+--- @param newTable table New state
+--- @param basePath string Current path for tracking
+--- @return table Array of {path, newValue} changes
+function HTML.findStateChanges(oldTable, newTable, basePath)
+    basePath = basePath or ""
+    local changes = {}
+    
+    -- Collect all keys from both tables
+    local allKeys = {}
+    for k in pairs(oldTable) do allKeys[k] = true end
+    for k in pairs(newTable) do allKeys[k] = true end
+    
+    for key in pairs(allKeys) do
+        local path = basePath == "" and key or basePath .. "." .. key
+        local oldVal = oldTable[key]
+        local newVal = newTable[key]
+        
+        if type(oldVal) == "table" and type(newVal) == "table" then
+            -- Both are tables, recurse
+            local nestedChanges = HTML.findStateChanges(oldVal, newVal, path)
+            for _, change in ipairs(nestedChanges) do
+                table.insert(changes, change)
+            end
+        elseif not HTML.deepEqual(oldVal, newVal) then
+            -- Values differ, record change
+            table.insert(changes, {
+                path = path,
+                value = newVal
+            })
+        end
+    end
+    
+    return changes
+end
+
+--- Smart state updater that only updates changed values
+--- @param state table Current state
+--- @param updater fun(currentState: table): table Function that returns new state
+--- @return table Array of {path, newValue} changes
+function HTML.updateState(state, updater)
+    local currentState = HTML.deepCopy(state)
+    local newState = updater(currentState)
+    return HTML.findStateChanges(state, newState)
+end
+
+
+--------------------------------------------------------------------------------------------------------
+---
+---
+---
+--===========================================================================
+--------------------------------------------------
+-- 🛠️ Enhanced CRUD Operations System with Table Objects
+--------------------------------------------------
+
+--- Operation types for CRUD operations
+HTML.CRUD_OPERATIONS = {
+    CREATE = "create",
+    READ = "read", 
+    UPDATE = "update",
+    DELETE = "delete",
+    APPEND = "append",
+    PREPEND = "prepend",
+    INSERT = "insert",
+    REMOVE = "remove",
+    SPLICE = "splice",
+    MERGE = "merge",
+    SET = "set",
+    CLEAR = "clear",
+    PUSH = "push",
+    POP = "pop",
+    SHIFT = "shift",
+    UNSHIFT = "unshift"
+}
+
+--- Convert a table reference to a path string
+--- @param tableRef table The table reference
+--- @param baseState table The base state to find the path
+--- @return string|nil The path string or nil if not found
+function HTML.tableToPath(tableRef, baseState)
+    local function findPath(current, target, currentPath)
+        if current == target then
+            return currentPath
+        end
+        
+        if type(current) == "table" then
+
+            print("Searching in table at path:", cjson.encode(currentPath))
+            for k, v in pairs(current) do
+                local path = findPath(v, target, currentPath .. "." .. tostring(k))
+                if path then
+                    return path
+                end
+            end
+        end
+        return nil
+    end
+    
+    return findPath(baseState, tableRef, "")
+end
+
+--- Get path from various input types (string, table, function)
+--- @param input string|table|function The input
+--- @param state table The component state
+--- @param isClientState boolean Whether it's client state
+--- @return string path, table value, boolean isClientState
+function HTML.resolvePath(input, state, isClientState)
+    if type(input) == "string" then
+        -- Handle client state prefix
+        if isClientState and not input:match("^cs%.") then
+            input = "cs." .. input
+        end
+        local value = HTML.getByPath(state, input)
+        return input, value, isClientState
+    elseif type(input) == "table" then
+        -- Find the path to this table in state
+        local path = HTML.tableToPath(input, state)
+        if path then
+            local value = HTML.getByPath(state, path)
+            -- Check if it's client state
+            local csPath = path:match("^cs%.(.+)$")
+            if csPath then
+                return csPath, value, true
+            end
+            return path, value, false
+        else
+            error("Cannot find table in state")
+        end
+    elseif type(input) == "function" then
+        -- Function that returns a path
+        local path = input(state)
+        return HTML.resolvePath(path, state, isClientState)
+    else
+        error("Invalid path type: " .. type(input))
+    end
+end
+
+--- Creates a CRUD operation patch with table object support
+--- @param operation string The CRUD operation type
+--- @param pathOrTable string|table The path string or table reference
+--- @param data any The data for the operation
+--- @param options table Additional options for the operation
+--- @return table The CRUD patch object
+function HTML.createCRUDPatch(operation, pathOrTable, data, options)
+    options = options or {}
+    local path = type(pathOrTable) == "string" and pathOrTable or nil
+    local tableRef = type(pathOrTable) == "table" and pathOrTable or nil
+    
+    local patch = {
+        type = "crud",
+        operation = operation,
+        path = path,
+        tableRef = tableRef,
+        data = data,
+        selector = options.selector,
+        varName = options.varName,
+        isClientState = options.isClientState or false,
+        isClientOnly = options.isClientOnly or false,
+        index = options.index,
+        count = options.count,
+        key = options.key,
+        template = options.template,
+        targetTable = tableRef -- Store reference for easy access
+    }
+    
+    return patch
+end
+
+--- Enhanced setState with CRUD operations and table object support
+function HTML.createCRUDEnhancedComponent(renderFn, initialState, initialClientState)
+    -- Merge states like in createDualStateComponent
+    local fullState = {}
+    
+    -- Copy normal state
+    if initialState then
+        for k, v in pairs(initialState) do
+            fullState[k] = v
+        end
+    end
+    
+    -- Copy client state with "cs." prefix
+    if initialClientState then
+        for k, v in pairs(initialClientState) do
+            fullState["cs." .. k] = v
+        end
+    end
+    
+    -- Extract reactive bindings
+    local reactiveBindings = {}
+    if fullState._reactiveBindings then
+        reactiveBindings = fullState._reactiveBindings
+        fullState._reactiveBindings = nil
+    end
+    
+    -- Create base component
+    local comp = HTML.createComponent(function(state, props)
+        -- Separate normal state from client state
+        local normalState = {}
+        local clientState = {}
+        
+        for k, v in pairs(state) do
+            if k:match("^cs%.") then
+                local clientKey = k:gsub("^cs%.", "")
+                clientState[clientKey] = v
+            else
+                normalState[k] = v
+            end
+        end
+        
+        return renderFn(normalState, props, clientState)
+    end, fullState)
+    
+    -- Store render function
+    comp.renderFn = renderFn
+    comp.reactiveBindings = reactiveBindings
+    
+-- In LuaHTMLReactive.lua, find the comp.crud function around line 2500-2600
+-- Look for where the patch is created and fix the circular reference issue:
+--- Apply a CRUD operation using table objects
+--- @param operation string CRUD operation type
+--- @param target string|table Path string or table reference
+--- @param data any Data for the operation
+--- @param options table Additional options
+--- @return PatchObject[] Generated patches
+function comp.crud(operation, target, data, options, oldData)
+    options = options or {}
+    print("[CRUD] Operation:", operation, "Target type:", type(target), " : oldData object : ", cjson.encode(oldData), " vs comp.state : ", cjson.encode(comp.state), "new data : ",  cjson.encode(data))
+
+    -- Determine which state to use - NEVER mix oldData and comp.state
+    local usingOldData = false
+    local workingState
+    local stateType  -- "comp" or "old"
+    
+    if oldData ~= nil then
+        -- Explicitly working with oldData (client data without cs. prefix)
+        workingState = oldData
+        usingOldData = true
+        stateType = "old"
+    else
+        -- Working with comp.state (may have cs. prefixed paths)
+        workingState = comp.state
+        stateType = "comp"
+    end
+    
+    local patches = {}
+    local path, currentValue, isClientState, cleanPath
+    
+    -- Helper function to safely encode without circular references
+    local function safeDeepCopy(orig, visited)
+        visited = visited or {}
+        
+        if type(orig) ~= "table" then
+            return orig
+        end
+        
+        -- Check for circular reference
+        if visited[orig] then
+            return {}  -- Return empty table instead of cycle marker
+        end
+        
+        visited[orig] = true
+        local copy = {}
+        
+        for k, v in pairs(orig) do
+            -- Handle keys that might be tables
+            local keyCopy = k
+            if type(k) == "table" then
+                keyCopy = safeDeepCopy(k, visited)
+            end
+            
+            -- Handle values
+            if type(v) == "table" then
+                copy[keyCopy] = safeDeepCopy(v, visited)
+            else
+                copy[keyCopy] = v
+            end
+        end
+        
+        visited[orig] = nil  -- Clean up
+        return copy
+    end
+    
+-- Helper function to normalize paths based on state type
+local function normalizePath(inputPath, stateType)
+    if type(inputPath) ~= "string" then return inputPath end
+    
+    if stateType == "old" then
+        -- For oldData, remove any existing cs. prefix if present
+        -- This ensures we have a clean base path
+        if inputPath:match("^cs%.") then
+            return inputPath:gsub("^cs%.", ""), true
+        else
+            return inputPath, true  -- Always client state
+        end
+    else
+        -- For comp.state, remove cs. prefix for internal use
+        if inputPath:match("^cs%.") then
+            return inputPath:gsub("^cs%.", ""), true
+        else
+            return inputPath, false
+        end
+    end
+end
+    
+    -- Helper function to get full path for state access
+    local function getFullPath(normalizedPath, stateType)
+        if stateType == "old" then
+            -- For oldData, use path as-is (no prefix)
+            return normalizedPath
+        else
+            -- For comp.state, add cs. prefix if it's client state
+            -- But since we're working with comp.state directly, paths are already correct
+            return normalizedPath
+        end
+    end
+    
+-- Helper function to get binding path (for HTML data-bind attribute)
+local function getBindingPath(normalizedPath, stateType)
+    if stateType == "old" then
+        -- For oldData, ensure it has cs. prefix but don't double-add it
+        if normalizedPath:match("^cs%.") then
+            return normalizedPath  -- Already has cs. prefix
+        else
+            return "cs." .. normalizedPath  -- Add cs. prefix
+        end
+    else
+        -- For comp.state, use the path as-is for binding
+        return normalizedPath
+    end
+end
+    
+    -- Helper function to get a snapshot of current value (not reference)
+    local function getCurrentValueSnapshot(state, fullPath)
+        print("Full path : ", fullPath, " : print getCurrentValueSnapshot : ", cjson.encode(state))
+        local value = HTML.getByPath(state, fullPath)
+        if value == nil then return nil end
+        
+        -- For tables, create a deep copy to avoid reference issues
+        if type(value) == "table" then
+            return safeDeepCopy(value)
+        end
+        
+        return value
+    end
+    
+    -- Resolve the target to get path and current value
+    if type(target) == "table" then
+        -- Try to find table reference path in the appropriate state
+        path = HTML.tableToPath(target, workingState)
+    
+        
+        currentValue = target
+    else
+        -- String path
+        path = target
+    end
+    
+    -- Normalize the path based on state type
+    local normalized, isClient = normalizePath(path, stateType)
+    isClientState = isClient  -- For oldData, this will always be true
+    
+    -- Get current value using appropriate state
+    local fullStatePath = getFullPath(normalized, stateType)
+    currentValue = getCurrentValueSnapshot(workingState, fullStatePath)
+    
+    -- Create selector using binding path (for UI updates)
+    local bindingPath = getBindingPath(normalized, stateType)
+    local selector = options.selector or string.format('[data-bind="%s"]', bindingPath)
+    
+    print("[CRUD] Resolved - State Type:", stateType,
+          "Original Path:", path,
+          "Normalized:", normalized,
+          "Full State Path:", fullStatePath,
+          "Binding Path:", bindingPath,
+          "Is Client State:", isClientState)
+    
+    local newValue
+    local oldValueSnapshot = getCurrentValueSnapshot(workingState, fullStatePath)
+    local operationData = {
+        oldValue = oldValueSnapshot,
+        operation = operation,
+        target = target
+    }
+    
+    -- For array operations, handle items field differently
+    local itemsData = nil
+    local fullValueForPatch = nil
+    
+    -- Execute CRUD operation on the working state
+    if operation == HTML.CRUD_OPERATIONS.SET then
+        -- Set entire value
+        newValue = safeDeepCopy(data)
+        HTML.setByPath(workingState, fullStatePath, newValue)
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+    elseif operation == HTML.CRUD_OPERATIONS.CREATE then
+        -- Create new entry
+        if options.key then
+            if type(currentValue) ~= "table" then
+                currentValue = {}
+                HTML.setByPath(workingState, fullStatePath, currentValue)
+            end
+            currentValue[options.key] = safeDeepCopy(data)
+            newValue = currentValue
+        else
+            newValue = safeDeepCopy(data)
+            HTML.setByPath(workingState, fullStatePath, newValue)
+        end
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+    elseif operation == HTML.CRUD_OPERATIONS.UPDATE then
+        -- Partial update
+        local freshValue = getCurrentValueSnapshot(workingState, fullStatePath) or {}
+        
+        if type(data) == "function" then
+            -- Data is a transformation function
+            newValue = data(safeDeepCopy(freshValue))
+        elseif type(data) == "table" then
+            if type(freshValue) ~= "table" then
+                freshValue = {}
+            end
+            
+            if options.key then
+                -- Update specific key
+                freshValue[options.key] = safeDeepCopy(data)
+            else
+                -- Merge data into current value
+                for k, v in pairs(data) do
+                    freshValue[k] = safeDeepCopy(v)
+                end
+            end
+            newValue = freshValue
+        else
+            newValue = data
+        end
+        
+        HTML.setByPath(workingState, fullStatePath, newValue)
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+    elseif operation == HTML.CRUD_OPERATIONS.DELETE then
+        -- Delete
+        local freshValue = getCurrentValueSnapshot(workingState, fullStatePath)
+        
+        if options.key then
+            -- Delete key from object
+            if type(freshValue) == "table" then
+                freshValue[options.key] = nil
+                newValue = freshValue
+                HTML.setByPath(workingState, fullStatePath, freshValue)
+            end
+        elseif options.index and type(freshValue) == "table" then
+            -- Remove from list by index
+            table.remove(freshValue, options.index)
+            newValue = freshValue
+            HTML.setByPath(workingState, fullStatePath, freshValue)
+        elseif options.predicate and type(freshValue) == "table" then
+            -- Remove by predicate
+            local newList = {}
+            for _, item in ipairs(freshValue) do
+                if not options.predicate(item) then
+                    table.insert(newList, item)
+                end
+            end
+            newValue = newList
+            HTML.setByPath(workingState, fullStatePath, newValue)
+        else
+            -- Delete entire value
+            HTML.setByPath(workingState, fullStatePath, nil)
+            newValue = nil
+        end
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+    elseif operation == HTML.CRUD_OPERATIONS.APPEND or operation == HTML.CRUD_OPERATIONS.PUSH then
+        -- Append to list
+        local freshValue = getCurrentValueSnapshot(workingState, fullStatePath)
+        
+        if type(freshValue) ~= "table" then
+            freshValue = {}
+        end
+        
+        local dataToAppend = safeDeepCopy(data)
+        
+        if type(dataToAppend) == "table" and #dataToAppend > 0 then
+            for _, item in ipairs(dataToAppend) do
+                table.insert(freshValue, item)
+            end
+            itemsData = safeDeepCopy(dataToAppend)
+        else
+            table.insert(freshValue, dataToAppend)
+            itemsData = {safeDeepCopy(dataToAppend)}
+        end
+        newValue = freshValue
+        HTML.setByPath(workingState, fullStatePath, freshValue)
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+        
+    -- ... (rest of the operations - PREPEND, INSERT, REMOVE, POP, SHIFT, SPLICE, MERGE, CLEAR)
+    -- They all follow the same pattern: use workingState, not comp.state directly
+    
+    elseif operation == HTML.CRUD_OPERATIONS.PREPEND or operation == HTML.CRUD_OPERATIONS.UNSHIFT then
+        -- Prepend to list
+        local freshValue = getCurrentValueSnapshot(workingState, fullStatePath)
+        
+        if type(freshValue) ~= "table" then
+            freshValue = {}
+        end
+        
+        local dataToPrepend = safeDeepCopy(data)
+        
+        if type(dataToPrepend) == "table" and #dataToPrepend > 0 then
+            for i = #dataToPrepend, 1, -1 do
+                table.insert(freshValue, 1, dataToPrepend[i])
+            end
+            itemsData = safeDeepCopy(dataToPrepend)
+        else
+            table.insert(freshValue, 1, dataToPrepend)
+            itemsData = {safeDeepCopy(dataToPrepend)}
+        end
+        newValue = freshValue
+        HTML.setByPath(workingState, fullStatePath, freshValue)
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+    elseif operation == HTML.CRUD_OPERATIONS.INSERT then
+        -- Insert at specific position
+        if not options.index then
+            error("INSERT operation requires index option")
+        end
+        
+        local freshValue = getCurrentValueSnapshot(workingState, fullStatePath)
+        
+        if type(freshValue) ~= "table" then
+            freshValue = {}
+        end
+        
+        local dataToInsert = safeDeepCopy(data)
+        
+        if type(dataToInsert) == "table" then
+            for i, item in ipairs(dataToInsert) do
+                table.insert(freshValue, options.index + i - 1, item)
+            end
+            itemsData = safeDeepCopy(dataToInsert)
+        else
+            table.insert(freshValue, options.index, dataToInsert)
+            itemsData = {safeDeepCopy(dataToInsert)}
+        end
+        newValue = freshValue
+        HTML.setByPath(workingState, fullStatePath, freshValue)
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+    elseif operation == HTML.CRUD_OPERATIONS.REMOVE then
+        -- Remove from list
+        local freshValue = getCurrentValueSnapshot(workingState, fullStatePath)
+        
+        if type(freshValue) == "table" then
+            if options.index then
+                table.remove(freshValue, options.index)
+                newValue = freshValue
+            elseif options.value then
+                for i = #freshValue, 1, -1 do
+                    if freshValue[i] == options.value then
+                        table.remove(freshValue, i)
+                    end
+                end
+                newValue = freshValue
+            end
+            HTML.setByPath(workingState, fullStatePath, freshValue)
+        end
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+    elseif operation == HTML.CRUD_OPERATIONS.POP then
+        -- Remove last element
+        local freshValue = getCurrentValueSnapshot(workingState, fullStatePath)
+        
+        if type(freshValue) == "table" and #freshValue > 0 then
+            local popped = table.remove(freshValue)
+            newValue = freshValue
+            operationData.removed = popped
+            HTML.setByPath(workingState, fullStatePath, freshValue)
+        end
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+    elseif operation == HTML.CRUD_OPERATIONS.SHIFT then
+        -- Remove first element
+        local freshValue = getCurrentValueSnapshot(workingState, fullStatePath)
+        
+        if type(freshValue) == "table" and #freshValue > 0 then
+            local shifted = table.remove(freshValue, 1)
+            newValue = freshValue
+            operationData.removed = shifted
+            HTML.setByPath(workingState, fullStatePath, freshValue)
+        end
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+    elseif operation == HTML.CRUD_OPERATIONS.SPLICE then
+        -- Splice operation
+        local freshValue = getCurrentValueSnapshot(workingState, fullStatePath)
+        
+        if type(freshValue) == "table" then
+            local start = options.index or 1
+            local deleteCount = options.count or 0
+            local removed = {}
+            
+            -- Remove items
+            for i = 1, deleteCount do
+                if freshValue[start] then
+                    table.insert(removed, table.remove(freshValue, start))
+                end
+            end
+            
+            -- Insert new items
+            if data then
+                local dataToInsert = safeDeepCopy(data)
+                if type(dataToInsert) == "table" then
+                    for i, item in ipairs(dataToInsert) do
+                        table.insert(freshValue, start + i - 1, item)
+                    end
+                    itemsData = safeDeepCopy(dataToInsert)
+                end
+            end
+            
+            newValue = freshValue
+            operationData.removed = removed
+            HTML.setByPath(workingState, fullStatePath, freshValue)
+        end
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+    elseif operation == HTML.CRUD_OPERATIONS.MERGE then
+        -- Merge objects
+        local freshValue = getCurrentValueSnapshot(workingState, fullStatePath)
+        
+        if type(freshValue) == "table" and type(data) == "table" then
+            for k, v in pairs(data) do
+                freshValue[k] = safeDeepCopy(v)
+            end
+            newValue = freshValue
+            HTML.setByPath(workingState, fullStatePath, freshValue)
+        end
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+    elseif operation == HTML.CRUD_OPERATIONS.CLEAR then
+        -- Clear all
+        local freshValue = getCurrentValueSnapshot(workingState, fullStatePath)
+        
+        if type(freshValue) == "table" then
+            if #freshValue > 0 then
+                -- Clear array
+                for i = #freshValue, 1, -1 do
+                    freshValue[i] = nil
+                end
+            else
+                -- Clear object
+                for k in pairs(freshValue) do
+                    freshValue[k] = nil
+                end
+            end
+            newValue = freshValue
+            HTML.setByPath(workingState, fullStatePath, freshValue)
+        else
+            HTML.setByPath(workingState, fullStatePath, nil)
+            newValue = nil
+        end
+        fullValueForPatch = safeDeepCopy(newValue)
+        
+    else
+        error("Unknown CRUD operation: " .. operation)
+    end
+    
+    -- Generate patch for the main operation
+    local patch = {
+        type = "crud",
+        operation = operation,
+        path = fullStatePath,           -- Path within the working state
+        cleanPath = normalized,          -- Normalized path (without any prefixes)
+        bindingPath = bindingPath,       -- Path for HTML binding (with cs. prefix for oldData)
+        value = fullValueForPatch,       -- Full value (safe deep copy)
+        oldValue = operationData.oldValue,  -- Old value snapshot (safe copy)
+        selector = selector,
+        varName = bindingPath,           -- Use binding path for var name
+        isClientState = true,            -- Both oldData and comp.state client data are client state
+        isClientOnly = options.isClientOnly or false,
+        component = options.component,
+        target = target,
+        stateType = stateType,           -- "comp" or "old" - critical for proper handling
+        _operationData = {
+            oldValue = operationData.oldValue,
+            operation = operation,
+            target = target,
+            removed = operationData.removed and safeDeepCopy(operationData.removed) or nil
+        }
+    }
+    
+    -- Add operation-specific data
+    if options.key then patch.key = options.key end
+    if options.index then patch.index = options.index end
+    if options.count then patch.count = options.count end
+    if options.value then patch.matchValue = options.value end
+    if operationData.removed then patch.removed = safeDeepCopy(operationData.removed) end
+    if options.predicate then patch.predicate = true end
+    
+    -- Determine patch type for client-side handling
+    if type(fullValueForPatch) == "table" then
+        if #fullValueForPatch > 0 then
+            patch.displayType = "list"
+            if itemsData then
+                patch.items = safeDeepCopy(itemsData)
+            else
+                patch.items = safeDeepCopy(fullValueForPatch)
+            end
+            patch.template = options.template or (patch.varName .. "_template")
+        else
+            patch.displayType = "object"
+            patch.object = safeDeepCopy(fullValueForPatch)
+            patch.template = options.template or (patch.varName .. "_template")
+        end
+    elseif stateType == "comp" and reactiveBindings and (reactiveBindings[fullStatePath] or reactiveBindings[bindingPath]) then
+        patch.displayType = "update-var"
+    else
+        patch.displayType = "nested"
+    end
+    
+    table.insert(patches, patch)
+    
+    -- Generate VDOM diff for structural changes (ONLY for comp.state)
+    if stateType == "comp" then
+        local needsVDOMDiff = operation == HTML.CRUD_OPERATIONS.CREATE or
+                             operation == HTML.CRUD_OPERATIONS.DELETE or
+                             operation == HTML.CRUD_OPERATIONS.CLEAR or
+                             (operation == HTML.CRUD_OPERATIONS.SET and type(data) == "table")
+        
+        if needsVDOMDiff then
+            local normalState = {}
+            local clientState = {}
+            
+            for k, v in pairs(comp.state) do
+                if k:match("^cs%.") then
+                    local clientKey = k:gsub("^cs%.", "")
+                    clientState[clientKey] = v
+                else
+                    normalState[k] = v
+                end
+            end
+            
+            local newNode = renderFn(normalState, comp.props, clientState)
+            local domPatches = HTML.diff(comp.lastNode, newNode)
+            comp.lastNode = newNode
+            
+            for _, p in ipairs(domPatches) do
+                if p.attrs and (p.attrs["data-bind-client"] or 
+                   (p.attrs.attributes and p.attrs.attributes["data-bind-client"])) then
+                    p.isClientState = true
+                end
+                table.insert(patches, p)
+            end
+        end
+    end
+    
+    -- comp.patches = patches
+    print ("final Patches obj: - : ", cjson.encode(patches))
+
+    return patches
+end
+    
+    --- Convenience methods with table object support
+    
+    --- Set value (supports table references)
+    function comp.set(target, value, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.SET, target, value, options)
+    end
+    
+    --- Create new entry (supports table references)
+    function comp.create(target, data, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.CREATE, target, data, options)
+    end
+    
+    --- Update partial data (supports table references)
+    function comp.update(target, data, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.UPDATE, target, data, options)
+    end
+    
+    --- Delete/Remove (supports table references)
+    function comp.delete(target, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.DELETE, target, nil, options)
+    end
+    
+    --- Append to list (supports table references)
+    function comp.append(target, items, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.APPEND, target, items, options)
+    end
+    
+    --- Prepend to list (supports table references)
+    function comp.prepend(target, items, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.PREPEND, target, items, options)
+    end
+    
+    --- Insert at position (supports table references)
+    function comp.insert(target, items, index, options)
+        options = options or {}
+        options.index = index
+        return comp.crud(HTML.CRUD_OPERATIONS.INSERT, target, items, options)
+    end
+    
+    --- Remove from list (supports table references)
+    function comp.remove(target, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.REMOVE, target, nil, options)
+    end
+    
+    --- Merge objects (supports table references)
+    function comp.merge(target, data, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.MERGE, target, data, options)
+    end
+    
+    --- Clear (supports table references)
+    function comp.clear(target, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.CLEAR, target, nil, options)
+    end
+    
+    --- Push to list (alias for append)
+    function comp.push(target, item, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.PUSH, target, item, options)
+    end
+    
+    --- Pop from list
+    function comp.pop(target, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.POP, target, nil, options)
+    end
+    
+    --- Unshift to list (alias for prepend)
+    function comp.unshift(target, item, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.UNSHIFT, target, item, options)
+    end
+    
+    --- Shift from list
+    function comp.shift(target, options)
+        options = options or {}
+        return comp.crud(HTML.CRUD_OPERATIONS.SHIFT, target, nil, options)
+    end
+    
+    --- Splice list
+    function comp.splice(target, index, deleteCount, insertItems, options)
+        options = options or {}
+        options.index = index
+        options.count = deleteCount
+        return comp.crud(HTML.CRUD_OPERATIONS.SPLICE, target, insertItems, options)
+    end
+    
+    --- Enhanced setState that handles both regular updates and CRUD operations
+    local originalSetState = comp.setState
+    comp.setState = function(updater)
+        -- Check if it's a CRUD operation
+        if type(updater) == "table" and updater._operation then
+            return comp.crud(updater._operation, updater._target, updater._data, updater._options)
+        end
+        
+        -- Check if it's client-only update
+        if type(updater) == "table" and updater.isClientOnly then
+            -- Convert to prefixed client state
+            local prefixed = { isClientOnly = true }
+            for k, v in pairs(updater) do
+                 if k ~= "isClientOnly" then
+                    prefixed[k] = v
+                end
+            end
+            return originalSetState(prefixed)
+        end
+        
+        -- Fall back to original setState
+        return originalSetState(updater)
+    end
+    
+    --- Enhanced setClientState with table object support
+comp.setClientState = function(clientStatePartial)
+    print("\n[setClientState] =========================")
+    print("[setClientState] called")
+    print("[setClientState] input type:", type(clientStatePartial))
+
+    if type(clientStatePartial) == "function" then
+        print("[setClientState] updater FUNCTION mode")
+
+        local currentClientState = {}
+        for k, v in pairs(comp.state) do
+            if k:match("^cs%.") then
+                currentClientState[k:gsub("^cs%.", "")] = v
+            end
+        end
+
+        print("[setClientState] currentClientState:", currentClientState)
+
+        local updatedClientState = clientStatePartial(currentClientState)
+        print("[setClientState] updater returned:", updatedClientState)
+
+        local changedPartial = { isClientOnly = true }
+
+        for k, v in pairs(updatedClientState) do
+            local oldValue = currentClientState[k]
+            if not HTML.deepEqual(v, oldValue) then
+                print("  → change detected:", k, oldValue, "→", v)
+                changedPartial[k] = v
+            else
+                print("  → no change:", k)
+            end
+        end
+
+        print("[setClientState] changedPartial:", changedPartial)
+        return comp.setState(changedPartial)
+
+    else
+        print("[setClientState] OBJECT mode")
+
+        local changedPartial = { isClientOnly = true }
+        for k, v in pairs(clientStatePartial) do
+            print("  → setting:", k, "=", v)
+            changedPartial[k] = v
+        end
+
+        return comp.setState(changedPartial)
+    end
+end
+
+    --- Get client state
+    comp.getClientState = function()
+        local clientState = {}
+        for k, v in pairs(comp.state) do
+            if k:match("^cs%.") then
+                local clientKey = k:gsub("^cs%.", "")
+                clientState[clientKey] = v
+            end
+        end
+        return clientState
+    end
+    
+    --- Get normal state
+    comp.getNormalState = function()
+        local normalState = {}
+        for k, v in pairs(comp.state) do
+            if not k:match("^cs%.") then
+                normalState[k] = v
+            end
+        end
+        return normalState
+    end
+    
+    --- Helper to get table reference by path
+    comp.getTable = function(path, isClientState)
+        if isClientState and not path:match("^cs%.") then
+            path = "cs." .. path
+        end
+        return HTML.getByPath(comp.state, path)
+    end
+    
+    return comp
+end
+
+
+--- Creates a stateful component.
+--- This function returns a component object with methods for rendering, managing state, and handling patches.
+--- @param fn fun(state: table, props: table): VDOMNode The render function for the component.
+--- @param initialState table? The initial state of the component.
+--- @field initialState._reactiveBindings table<string, boolean>? A map of state keys that are reactively bound to DOM elements.
+--- @return Component A component object.
+function HTML.createComponent(fn, initialState, clientState)
+ local comp = {}
+ comp.state = initialState or {}
+ comp.lastNode = nil
+ comp.patches = {}
+ comp.props = {}
+ -- Explicitly define reactive bindings, or derive from state keys if preferred
+ comp.reactiveBindings = comp.state._reactiveBindings or {}
+ comp.state._reactiveBindings = nil -- Clean up if directly in state
+
+--- Updates the component's state and automatically generates patches by comparing the old VDOM with the new VDOM.
+--- This is the primary way to trigger UI updates.
+--- @param updater table|function Either a partial state object or an updater function
+--- @return PatchObject[] A list of generated patch objects.
+function comp.setState(updater)
+    print("\n[setState] ===============================")
+    print("[setState] called")
+    print("[setState] updater type:", type(updater))
+
+    local generatedPatches = {}
+    local isFunction = type(updater) == "function"
+
+    -- Check if it's a client-only update
+    local isClientOnly = not isFunction and updater.isClientOnly == true
+    print("[setState] isFunction:", isFunction)
+    print("[setState] isClientOnly:", isClientOnly)
+
+    -- Resolve new partial state
+    local newPartialState
+    if isFunction then
+        print("[setState] updater is function → cloning state")
+        local stateCopy = HTML.deepCopy(comp.state)
+        newPartialState = updater(stateCopy)
+        print("[setState] updater function returned:", newPartialState)
+    else
+        print("[setState] updater is object")
+        newPartialState = updater
+    end
+
+    -- Track changes
+    local changes = {}
+    local oldStateSnapshot = HTML.deepCopy(comp.state)
+    print("[setState] oldStateSnapshot:", oldStateSnapshot)
+
+    if isFunction then
+        print("[setState] FUNCTION MODE → replacing entire state")
+        comp.state = newPartialState
+
+        changes = HTML.findStateChanges(oldStateSnapshot, comp.state)
+        print("[setState] detected changes (function mode):", changes)
+    else
+        print("[setState] PARTIAL MERGE MODE")
+
+        for key, value in pairs(newPartialState) do
+            if key ~= "isClientOnly" then
+                local actualKey = key
+
+                if isClientOnly and not key:match("^cs%.") then
+                    actualKey = "cs." .. key
+                end
+
+                local oldValue = HTML.getByPath(comp.state, actualKey)
+
+                print("[setState] checking key:", actualKey)
+                print("  ├─ old:", oldValue)
+                print("  └─ new:", value)
+
+                if not HTML.deepEqual(value, oldValue) then
+                    print("  → CHANGE DETECTED")
+
+                    table.insert(changes, {
+                        path = actualKey,
+                        value = value,
+                        isClientState = isClientOnly or actualKey:match("^cs%.")
+                    })
+
+                    HTML.setByPath(comp.state, actualKey, value)
+                else
+                    print("  → no change")
+                end
+            end
+        end
+    end
+
+    print("[setState] total changes:", #changes)
+
+    -- Generate patches
+    for _, change in ipairs(changes) do
+        local path = change.path
+        local value = change.value
+        local isClientState = change.isClientState
+
+        local varName = path
+        local cleanVarName = isClientState and path:gsub("^cs%.", "") or path
+
+        local selector
+        if isClientState then
+            selector = string.format('[data-bind-client="%s"]', cleanVarName)
+        else
+            selector = string.format('[data-bind="%s"]', path)
+        end
+
+        print("[setState] generating patch for:", path)
+        print("  ├─ selector:", selector)
+        print("  ├─ isClientState:", isClientState)
+        print("  └─ value type:", type(value))
+
+        if comp.reactiveBindings[path] then
+            print("  → reactive update-var patch")
+
+            table.insert(generatedPatches, {
+                type = "update-var",
+                varName = varName,
+                value = value,
+                selector = selector,
+                isClientState = isClientState
+            })
+
+        elseif type(value) == "table" and #value > 0 then
+            print("  → list patch")
+
+            table.insert(generatedPatches, {
+                type = "list",
+                selector = selector,
+                items = value,
+                template = varName .. "_template",
+                isClientState = isClientState
+            })
+
+        elseif type(value) == "table" then
+            print("  → object patch")
+
+            table.insert(generatedPatches, {
+                type = "object",
+                selector = selector,
+                object = value,
+                template = varName .. "_template",
+                isClientState = isClientState
+            })
+
+        else
+            print("  → nested primitive patch")
+
+            table.insert(generatedPatches, {
+                type = "nested",
+                selector = selector,
+                path = varName,
+                value = value,
+                isClientState = isClientState
+            })
+        end
+    end
+
+    -- VDOM diff
+    if #changes > 0 then
+        print("[setState] performing VDOM diff")
+
+        local normalState = {}
+        local clientState = {}
+
+        for k, v in pairs(comp.state) do
+            if k:match("^cs%.") then
+                clientState[k:gsub("^cs%.", "")] = v
+            else
+                normalState[k] = v
+            end
+        end
+
+        print("[setState] normalState:", normalState)
+        print("[setState] clientState:", clientState)
+
+        local newNode = comp.renderFn(normalState, comp.props, clientState)
+        local domPatches = HTML.diff(comp.lastNode, newNode)
+
+        print("[setState] DOM patches generated:", #domPatches)
+
+        comp.lastNode = newNode
+
+        for _, p in ipairs(domPatches) do
+            table.insert(generatedPatches, p)
+        end
+    else
+        print("[setState] no changes → skipping VDOM diff")
+    end
+
+    comp.patches = generatedPatches
+
+    print("[setState] TOTAL patches returned:", #generatedPatches)
+    print("[setState] ===============================\n")
+
+    return generatedPatches
+end
+
+
+--- Renders the component's VDOM based on its current state and provided props.
+--- @param props table? Properties to pass to the component's render function.
+--- @return VDOMNode The rendered VDOM node.
+ function comp.render(props)
+  comp.props = props or {}
+  local node = fn(comp.state, comp.props)
+  comp.lastNode = node
+  return node
+ end
+
+ --- Accepts patch messages (e.g., from JS) and mutates state.
+ --- This function is designed to be called by the client-side patching mechanism.
+ --- @param method string The name of the method to call on the component's `methods` table.
+ --- @param args any[] Arguments to pass to the component method.
+ --- @return any The result of the called method.
+ function comp.patch(method, args)
+  if type(comp.methods) == "table" and type(comp.methods[method]) == "function" then
+   return comp.methods[method](comp, table.unpack(args or {}))
+  end
+ end
+
+ comp.methods = {} -- define comp.methods.add/remove etc externally
+ return comp
+end
+
+--- Creates a component with built-in clientState support
+--- @param options table Component options
+--- @field options.render fun(state: table, props: table, clientState: table): VDOMNode Render function
+--- @field options.initialState table? Initial state
+--- @field options.initialClientState table? Initial client state
+--- @field options.methods table? Component methods
+--- @field options.onClientStateChange fun(newClientState: table, oldClientState: table)? Callback when clientState changes
+--- @return Component
+function HTML.createComponentWithClientState(options)
+    local comp = HTML.createDualStateComponent(options.render, options.initialState, options.initialClientState)
+    
+    -- Store the callback
+    comp.onClientStateChange = options.onClientStateChange
+    
+    -- Enhance setClientState to trigger callback
+    local originalSetClientState = comp.setClientState
+ -- In your reactive component's setClientState method (comp.setClientState in createDualStateComponent)
+comp.setClientState = function(clientStatePartial)
+    print("[DEBUG] reactive_component.setClientState called")
+    print("[DEBUG]   clientStatePartial type:", type(clientStatePartial))
+    print("[DEBUG]   Is function:", type(clientStatePartial) == "function")
+    
+    -- Handle both function and object updates
+    if type(clientStatePartial) == "function" then
+        print("[DEBUG]   Processing function updater")
+        -- Get current client state
+        local currentClientState = {}
+        for k, v in pairs(comp.state) do
+            if k:match("^cs%.") then
+                local clientKey = k:gsub("^cs%.", "")
+                currentClientState[clientKey] = v
+            end
+        end
+        
+        print("[DEBUG]   Current client state in reactive:", cjson.encode(currentClientState))
+        -- Apply updater function
+        local updatedClientState = clientStatePartial(currentClientState)
+        print("[DEBUG]   Updated client state from function:", cjson.encode(updatedClientState))
+        
+        -- Convert to prefixed state
+        local prefixedPartial = { isClientOnly = true }
+        for k, v in pairs(updatedClientState) do
+            prefixedPartial[k] = v
+        end
+        
+        print("[DEBUG]   Calling setState with prefixed partial")
+        return comp.setState(prefixedPartial)
+    else
+        print("[DEBUG]   Processing object updater")
+        print("[DEBUG]   clientStatePartial:", cjson.encode(clientStatePartial))
+        
+        -- Object update - add "cs." prefix
+        local prefixedPartial = { isClientOnly = true }
+        for k, v in pairs(clientStatePartial) do
+            prefixedPartial[k] = v
+        end
+        print("[DEBUG]   prefixedPartial:", cjson.encode(prefixedPartial))
+        
+        print("[DEBUG]   Calling setState")
+        return comp.setState(prefixedPartial)
+    end
+end
+    
+    -- Add custom methods
+    if options.methods then
+        for name, method in pairs(options.methods) do
+            comp.methods[name] = method
+        end
+    end
+    
+    return comp
+end
+
 --- Enhanced setState method for components that supports clientState
 --- @param partial table A table containing state keys and new values
 --- @return PatchObject[] A list of generated patch objects
@@ -2483,45 +3758,534 @@ function HTML.createEnhancedComponent(fn, initialState)
     
     -- Enhanced setState that handles clientState patches
     local originalSetState = comp.setState
-    comp.setState = function(partial)
-        local patches = originalSetState(partial)
+-- Enhanced debug for the dual state component's setState
+comp.setState = function(updater)
+    print("[DEBUG] ======== DUAL STATE COMPONENT setState START ========")
+    print("[DEBUG] updater type:", type(updater))
+    
+    local generatedPatches = {}
+    local isFunction = type(updater) == "function"
+    
+    -- Check if it's a client-only update
+    local isClientOnly = not isFunction and updater.isClientOnly == true
+    print("[DEBUG] isClientOnly:", isClientOnly)
+    print("[DEBUG] updater.isClientOnly:", not isFunction and updater.isClientOnly)
+    
+    -- Get the new state (either by merging or calling updater)
+    local newPartialState
+    if isFunction then
+        print("[DEBUG] Using function updater")
+        -- Call the updater function with current state copy
+        local stateCopy = HTML.deepCopy(comp.state)
+        newPartialState = updater(stateCopy)
+    else
+        print("[DEBUG] Using table updater")
+        -- It's already a partial state object
+        newPartialState = updater
+    end
+    
+    print("[DEBUG] newPartialState:", cjson.encode(newPartialState))
+    print("[DEBUG] Current comp.state keys:", table.concat(tableKeys(comp.state), ", "))
+    
+    -- Track what actually changed
+    local changes = {}
+    local oldStateSnapshot = HTML.deepCopy(comp.state)
+    print("[DEBUG] oldStateSnapshot:", cjson.encode(oldStateSnapshot))
+    
+    if isFunction then
+        print("[DEBUG] Replacing entire state (function updater)")
+        comp.state = newPartialState
         
-        -- Add clientState specific patches if clientState keys are modified
-        for k, v in pairs(partial) do
-            if k:find("clientState") or (comp.reactiveBindings and comp.reactiveBindings[k] and k:find("client")) then
-                -- Generate clientState specific patches
-                table.insert(patches, {
-                    type = "update-var",
-                    varName = k,
-                    value = v,
-                    selector = string.format('[data-bind-client="%s"]', k),
-                    isClientState = true
-                })
+        -- Find all changes by comparing old and new state
+        changes = HTML.findStateChanges(oldStateSnapshot, comp.state)
+    else
+        print("[DEBUG] Merging partial state")
+        -- When using partial state, merge changes
+        for key, value in pairs(newPartialState) do
+            if key ~= "isClientOnly" then
+                print("[DEBUG]   Processing key:", key, "value:", cjson.encode(value))
+                
+                -- Handle client state prefixing
+                local actualKey = key
+                if isClientOnly and not key:match("^cs%.") then
+                    actualKey = "cs." .. key
+                    print("[DEBUG]     Added 'cs.' prefix ->", actualKey)
+                end
+                
+                local oldValue = HTML.getByPath(comp.state, actualKey)
+                print("[DEBUG]     oldValue:", cjson.encode(oldValue))
+                print("[DEBUG]     newValue:", cjson.encode(value))
+                
+                if not HTML.deepEqual(value, oldValue) then
+                    print("[DEBUG]     ✅ CHANGE DETECTED")
+                    -- Store the change with the actual key
+                    table.insert(changes, {
+                        path = actualKey,
+                        value = value,
+                        isClientState = isClientOnly or actualKey:match("^cs%.")
+                    })
+                    -- Update the state
+                    HTML.setByPath(comp.state, actualKey, value)
+                else
+                    print("[DEBUG]     ❌ NO CHANGE (values are equal)")
+                end
+            end
+        end
+    end
+    
+    print("[DEBUG] Found", #changes, "changes:")
+    for i, change in ipairs(changes) do
+        print("[DEBUG]   Change", i, "path:", change.path, "isClientState:", change.isClientState)
+    end
+    
+    -- Generate patches for each change
+    print("[DEBUG] Generating patches...")
+    for _, change in ipairs(changes) do
+        local path = change.path
+        local value = change.value
+        local isClientState = change.isClientState
+        
+        print("[DEBUG]   Processing change:", path)
+        print("[DEBUG]     isClientState:", isClientState)
+        print("[DEBUG]     value type:", type(value))
+        
+        -- Determine selector and varName
+        local varName = path
+        
+        -- Remove "cs." prefix for client state bindings
+        local cleanVarName = isClientState and path:gsub("^cs%.", "") or path
+        
+        -- Generate different selectors for client vs normal state
+        local selector
+        if isClientState then
+            selector = string.format('[data-bind-client="%s"]', cleanVarName)
+        else
+            selector = string.format('[data-bind="%s"]', path)
+        end
+        
+        print("[DEBUG]     cleanVarName:", cleanVarName)
+        print("[DEBUG]     selector:", selector)
+        print("[DEBUG]     varName:", varName)
+        
+        -- Generate patch based on type
+        if comp.reactiveBindings[path] then
+            print("[DEBUG]     Generating update-var patch (reactive binding)")
+            table.insert(generatedPatches, {
+                type = "update-var",
+                varName = varName,
+                value = value,
+                selector = selector,
+                isClientState = isClientState,
+                isClientOnly = isClientOnly
+            })
+        elseif type(value) == "table" and #value > 0 then
+            print("[DEBUG]     Generating list patch (array)")
+            table.insert(generatedPatches, {
+                type = "list",
+                selector = selector,
+                items = value,
+                template = varName .. "_template",
+                varName = varName,
+                isClientState = isClientState,
+                isClientOnly = isClientOnly
+            })
+        elseif type(value) == "table" then
+            print("[DEBUG]     Generating object patch (object)")
+            table.insert(generatedPatches, {
+                type = "object",
+                selector = selector,
+                object = value,
+                template = varName .. "_template",
+                varName = varName,
+                isClientState = isClientState,
+                isClientOnly = isClientOnly
+            })
+        else
+            print("[DEBUG]     Generating nested patch (primitive)")
+            table.insert(generatedPatches, {
+                type = "nested",
+                selector = selector,
+                path = varName,
+                value = value,
+                varName = varName,
+                isClientState = isClientState,
+                isClientOnly = isClientOnly
+            })
+        end
+    end
+    
+    print("[DEBUG] Generated", #generatedPatches, "patches")
+    for i, patch in ipairs(generatedPatches) do
+        print("[DEBUG]   Patch", i, "type:", patch.type, "varName:", patch.varName)
+    end
+    
+    -- Check if VDOM diff should be done
+    print("[DEBUG] Checking if VDOM diff needed...")
+    if #changes > 0 then
+        print("[DEBUG] Changes detected, doing VDOM diff")
+        -- Separate state for rendering
+        local normalState = {}
+        local clientState = {}
+        
+        for k, v in pairs(comp.state) do
+            if k:match("^cs%.") then
+                -- Remove "cs." prefix for client state
+                local clientKey = k:gsub("^cs%.", "")
+                clientState[clientKey] = v
+            else
+                normalState[k] = v
             end
         end
         
-        return patches
+        print("[DEBUG]   normalState for rendering:", cjson.encode(normalState))
+        print("[DEBUG]   clientState for rendering:", cjson.encode(clientState))
+        
+        local newNode = renderFn(normalState, comp.props, clientState)
+        local domPatches = HTML.diff(comp.lastNode, newNode)
+        comp.lastNode = newNode
+        
+        print("[DEBUG]   Generated", #domPatches, "DOM patches from diff")
+        for i, p in ipairs(domPatches) do
+            print("[DEBUG]     DOM Patch", i, "type:", p.type)
+            table.insert(generatedPatches, p)
+        end
+    else
+        print("[DEBUG] No changes, skipping VDOM diff")
     end
+    
+    comp.patches = generatedPatches
+    print("[DEBUG] ======== DUAL STATE COMPONENT setState END ========")
+    print("[DEBUG] Total patches to return:", #generatedPatches)
+    return generatedPatches
+end
     
     return comp
 end
 
---- Creates a component that can handle both normal state and clientState
---- @param renderFn fun(state: table, props: table, clientState: table): VDOMNode The render function
---- @param initialState table? Initial state
---- @param initialClientState table? Initial client state
---- @return Component
+-- Helper functions first
+local function tableKeys(tbl)
+    local keys = {}
+    for k, _ in pairs(tbl or {}) do
+        table.insert(keys, tostring(k))
+    end
+    return keys
+end
+
+local function tableKeysCount(tbl)
+    local count = 0
+    for _ in pairs(tbl or {}) do
+        count = count + 1
+    end
+    return count
+end
+
+local function tableContains(table, element)
+    for _, value in pairs(table) do
+        if value == element then
+            return true
+        end
+    end
+    return false
+end
+
+
+
+-- Fixed reactive component setClientState
+function createReactiveComponentSetClientState(comp)
+    return function(clientStatePartial)
+        print("[DEBUG] ======== REACTIVE COMPONENT setClientState START ========")
+        print("[DEBUG] clientStatePartial type:", type(clientStatePartial))
+        
+        -- Handle both function and object updates
+        if type(clientStatePartial) == "function" then
+            print("[DEBUG] Processing function updater")
+            -- Get current client state
+            local currentClientState = comp.getClientState()
+            print("[DEBUG] Current client state from getClientState():", cjson.encode(currentClientState))
+            
+            -- Apply updater function
+            local updatedClientState = clientStatePartial(currentClientState)
+            print("[DEBUG] Updated client state from function:", cjson.encode(updatedClientState))
+            
+            -- Find ONLY the changes
+            local changes = HTML.findStateChanges(currentClientState, updatedClientState)
+            print("[DEBUG] Actual changes detected:", #changes)
+            
+            if #changes == 0 then
+                print("[DEBUG] No changes detected, returning empty patches")
+                print("[DEBUG] ======== REACTIVE COMPONENT setClientState END ========")
+                return {}
+            end
+            
+            -- Build partial with ONLY changed values
+            local changedPartial = { isClientOnly = true }
+            for _, change in ipairs(changes) do
+                -- Set the changed value
+                changedPartial[change.path] = change.value
+                print("[DEBUG]   Including change in partial:", change.path, "=", cjson.encode(change.value))
+            end
+            
+            print("[DEBUG] Changed partial (only actual changes):", cjson.encode(changedPartial))
+            print("[DEBUG] Calling comp.setState with changedPartial")
+            local patches = comp.setState(changedPartial)
+            print("[DEBUG] ======== REACTIVE COMPONENT setClientState END ========")
+            return patches
+        else
+            print("[DEBUG] Processing object updater")
+            print("[DEBUG] clientStatePartial:", cjson.encode(clientStatePartial))
+            
+            -- Object update
+            local changedPartial = { isClientOnly = true }
+            for k, v in pairs(clientStatePartial) do
+                changedPartial[k] = v
+            end
+            
+            print("[DEBUG] Calling comp.setState with changedPartial")
+            local patches = comp.setState(changedPartial)
+            print("[DEBUG] ======== REACTIVE COMPONENT setClientState END ========")
+            return patches
+        end
+    end
+end
+
+-- Fixed dual state component setState
+function createDualStateComponentSetState(comp, renderFn)
+    return function(updater)
+        print("[DEBUG] ======== DUAL STATE COMPONENT setState START ========")
+        print("[DEBUG] updater type:", type(updater))
+        
+        local generatedPatches = {}
+        local isFunction = type(updater) == "function"
+        
+        -- Check if it's a client-only update
+        local isClientOnly = not isFunction and updater.isClientOnly == true
+        print("[DEBUG] isClientOnly:", isClientOnly)
+        if not isFunction then
+            print("[DEBUG] updater.isClientOnly:", updater.isClientOnly)
+        end
+        
+        -- Get the new state (either by merging or calling updater)
+        local newPartialState
+        if isFunction then
+            print("[DEBUG] Using function updater")
+            -- Call the updater function with current state copy
+            local stateCopy = HTML.deepCopy(comp.state)
+            newPartialState = updater(stateCopy)
+        else
+            print("[DEBUG] Using table updater")
+            -- It's already a partial state object
+            newPartialState = updater
+        end
+        
+        print("[DEBUG] newPartialState:", cjson.encode(newPartialState))
+        print("[DEBUG] Current comp.state keys:", table.concat(tableKeys(comp.state), ", "))
+        
+        -- Track what actually changed
+        local changes = {}
+        local oldStateSnapshot = HTML.deepCopy(comp.state)
+        
+        if isFunction then
+            print("[DEBUG] Replacing entire state (function updater)")
+            comp.state = newPartialState
+            
+            -- Find all changes by comparing old and new state
+            changes = HTML.findStateChanges(oldStateSnapshot, comp.state)
+        else
+            print("[DEBUG] Merging partial state")
+            -- When using partial state, merge changes
+            for key, value in pairs(newPartialState) do
+                if key ~= "isClientOnly" then
+                    print("[DEBUG]   Processing key:", key, "value:", cjson.encode(value))
+                    
+                    -- Handle client state prefixing
+                    local actualKey = key
+                    if isClientOnly and not key:match("^cs%.") then
+                        actualKey = "cs." .. key
+                        print("[DEBUG]     Added 'cs.' prefix ->", actualKey)
+                    end
+                    
+                    local oldValue = HTML.getByPath(comp.state, actualKey)
+                    local oldValueJson = cjson.encode(oldValue)
+                    local newValueJson = cjson.encode(value)
+                    print("[DEBUG]     oldValue:", oldValueJson)
+                    print("[DEBUG]     newValue:", newValueJson)
+                    
+                    if not HTML.deepEqual(value, oldValue) then
+                        print("[DEBUG]     ✅ CHANGE DETECTED")
+                        -- Store the change with the actual key
+                        table.insert(changes, {
+                            path = actualKey,
+                            value = value,
+                            isClientState = isClientOnly or actualKey:match("^cs%.")
+                        })
+                        -- Update the state
+                        HTML.setByPath(comp.state, actualKey, value)
+                    else
+                        print("[DEBUG]     ❌ NO CHANGE (values are equal)")
+                    end
+                end
+            end
+        end
+        
+        print("[DEBUG] Found", #changes, "changes:")
+        for i, change in ipairs(changes) do
+            print("[DEBUG]   Change", i, "path:", change.path, "isClientState:", change.isClientState)
+        end
+        
+        -- Generate patches for each change
+        print("[DEBUG] Generating patches...")
+        for _, change in ipairs(changes) do
+            local path = change.path
+            local value = change.value
+            local isClientState = change.isClientState
+            
+            print("[DEBUG]   Processing change:", path)
+            print("[DEBUG]     isClientState:", isClientState)
+            print("[DEBUG]     value type:", type(value))
+            
+            -- Determine selector and varName
+            local varName = path
+            
+            -- Remove "cs." prefix for client state bindings
+            local cleanVarName = isClientState and path:gsub("^cs%.", "") or path
+            
+            -- Generate different selectors for client vs normal state
+            local selector
+            if isClientState then
+                selector = string.format('[data-bind-client="%s"]', cleanVarName)
+            else
+                selector = string.format('[data-bind="%s"]', path)
+            end
+            
+            print("[DEBUG]     cleanVarName:", cleanVarName)
+            print("[DEBUG]     selector:", selector)
+            print("[DEBUG]     varName:", varName)
+            
+            -- Generate patch based on type
+            local patch = {
+                selector = selector,
+                varName = varName,  -- CRITICAL: Always include varName!
+                isClientState = isClientState,
+                isClientOnly = isClientOnly
+            }
+            
+            if comp.reactiveBindings[path] then
+                -- Reactive variable → update-var patch
+                print("[DEBUG]     Generating update-var patch (reactive binding)")
+                patch.type = "update-var"
+                patch.value = value
+            elseif type(value) == "table" and #value > 0 then
+                -- Array → list patch
+                print("[DEBUG]     Generating list patch (array)")
+                patch.type = "list"
+                patch.items = value
+                patch.template = varName .. "_template"
+            elseif type(value) == "table" then
+                -- Object → object patch
+                print("[DEBUG]     Generating object patch (object)")
+                patch.type = "object"
+                patch.object = value
+                patch.template = varName .. "_template"
+            else
+                -- Primitive value → nested patch
+                print("[DEBUG]     Generating nested patch (primitive)")
+                patch.type = "nested"
+                patch.path = varName
+                patch.value = value
+            end
+            
+            table.insert(generatedPatches, patch)
+        end
+        
+        print("[DEBUG] Generated", #generatedPatches, "patches")
+        for i, patch in ipairs(generatedPatches) do
+            print("[DEBUG]   Patch", i, "type:", patch.type, "varName:", patch.varName, "isClientOnly:", patch.isClientOnly)
+        end
+        
+        -- Check if VDOM diff should be done
+        print("[DEBUG] Checking if VDOM diff needed...")
+        if #changes > 0 then
+            print("[DEBUG] Changes detected, doing VDOM diff")
+            -- Separate state for rendering
+            local normalState = {}
+            local clientState = {}
+            
+            for k, v in pairs(comp.state) do
+                if k:match("^cs%.") then
+                    -- Remove "cs." prefix for client state
+                    local clientKey = k:gsub("^cs%.", "")
+                    clientState[clientKey] = v
+                else
+                    normalState[k] = v
+                end
+            end
+            
+            print("[DEBUG]   normalState for rendering:", cjson.encode(normalState))
+            print("[DEBUG]   clientState for rendering:", cjson.encode(clientState))
+            
+            local newNode = renderFn(normalState, comp.props, clientState)
+            local domPatches = HTML.diff(comp.lastNode, newNode)
+            comp.lastNode = newNode
+            
+            print("[DEBUG]   Generated", #domPatches, "DOM patches from diff")
+            for i, p in ipairs(domPatches) do
+                print("[DEBUG]     DOM Patch", i, "type:", p.type)
+                -- Add client state flags to DOM patches if they affect client state bindings
+                if p.attrs and (p.attrs["data-bind-client"] or (p.attrs.attributes and p.attrs.attributes["data-bind-client"])) then
+                    p.isClientState = true
+                    p.isClientOnly = isClientOnly
+                end
+                table.insert(generatedPatches, p)
+            end
+        else
+            print("[DEBUG] No changes, skipping VDOM diff")
+        end
+        
+        comp.patches = generatedPatches
+        print("[DEBUG] ======== DUAL STATE COMPONENT setState END ========")
+        print("[DEBUG] Total patches to return:", #generatedPatches)
+        return generatedPatches
+    end
+end
+
+-- Updated createDualStateComponent with fixed setClientState and setState
 function HTML.createDualStateComponent(renderFn, initialState, initialClientState)
-    local fullState = initialState or {}
-    fullState.clientState = initialClientState or {}
+    -- Merge initial states with proper namespacing
+    local fullState = {}
     
+    -- Copy normal state
+    if initialState then
+        for k, v in pairs(initialState) do
+            fullState[k] = v
+        end
+    end
+    
+    -- Copy client state with "cs." prefix
+    if initialClientState then
+        for k, v in pairs(initialClientState) do
+            fullState["cs." .. k] = v
+        end
+    end
+    
+    -- Extract reactive bindings from both states
+    local reactiveBindings = {}
+    if fullState._reactiveBindings then
+        reactiveBindings = fullState._reactiveBindings
+        fullState._reactiveBindings = nil
+    end
+    
+    -- Create component with the merged state
     local comp = HTML.createComponent(function(state, props)
-        -- Separate normal state from clientState for the render function
+        -- Separate normal state from client state for the render function
         local normalState = {}
-        local clientState = state.clientState or {}
+        local clientState = {}
         
         for k, v in pairs(state) do
-            if k ~= "clientState" then
+            if k:match("^cs%.") then
+                -- Remove "cs." prefix for client state
+                local clientKey = k:gsub("^cs%.", "")
+                clientState[clientKey] = v
+            else
                 normalState[k] = v
             end
         end
@@ -2529,23 +4293,45 @@ function HTML.createDualStateComponent(renderFn, initialState, initialClientStat
         return renderFn(normalState, props, clientState)
     end, fullState)
     
-    -- Enhanced method to update clientState specifically
-    comp.setClientState = function(clientStatePartial)
-        local mergedClientState = comp.state.clientState or {}
-        for k, v in pairs(clientStatePartial) do
-            mergedClientState[k] = v
+    -- Store the original render function
+    comp.renderFn = renderFn
+    
+    -- Preserve reactive bindings
+    comp.reactiveBindings = reactiveBindings
+    
+    -- Override setState with fixed version
+    comp.setState = createDualStateComponentSetState(comp, renderFn)
+    
+    -- Override setClientState with fixed version
+    comp.setClientState = createReactiveComponentSetClientState(comp)
+    
+    --- Get client state
+    comp.getClientState = function()
+        local clientState = {}
+        for k, v in pairs(comp.state) do
+            if k:match("^cs%.") then
+                local clientKey = k:gsub("^cs%.", "")
+                clientState[clientKey] = v
+            end
         end
-        
-        return comp.setState({ clientState = mergedClientState })
+        return clientState
     end
     
-    -- Method to get current clientState
-    comp.getClientState = function()
-        return comp.state.clientState or {}
+    --- Get normal state (non-client state)
+    comp.getNormalState = function()
+        local normalState = {}
+        for k, v in pairs(comp.state) do
+            if not k:match("^cs%.") then
+                normalState[k] = v
+            end
+        end
+        return normalState
     end
     
     return comp
 end
+
+
 
 --------------------------------------------------
 -- 🔄 Enhanced Patch Generation for ClientState
@@ -2652,6 +4438,141 @@ function HTML.safeJsonDecode(str)
     else
         return nil, result
     end
+end
+
+--- Deep copy a table
+--- @param t table The table to copy
+--- @return table A deep copy of the table
+function HTML.deepCopy(t)
+    if type(t) ~= "table" then return t end
+    local copy = {}
+    for k, v in pairs(t) do
+        copy[HTML.deepCopy(k)] = HTML.deepCopy(v)
+    end
+    return copy
+end
+
+-- --- Find differences between two tables recursively
+-- --- @param oldTable table Old state
+-- --- @param newTable table New state
+-- --- @param basePath string Current path for tracking
+-- --- @return table Array of {path, newValue} changes
+-- function HTML.findStateChanges(oldTable, newTable, basePath)
+--     basePath = basePath or ""
+--     local changes = {}
+    
+--     -- Collect all keys from both tables
+--     local allKeys = {}
+--     for k in pairs(oldTable) do allKeys[k] = true end
+--     for k in pairs(newTable) do allKeys[k] = true end
+    
+--     for key in pairs(allKeys) do
+--         local path = basePath == "" and key or basePath .. "." .. key
+--         local oldVal = oldTable[key]
+--         local newVal = newTable[key]
+        
+--         if type(oldVal) == "table" and type(newVal) == "table" then
+--             -- Both are tables, recurse
+--             local nestedChanges = HTML.findStateChanges(oldVal, newVal, path)
+--             for _, change in ipairs(nestedChanges) do
+--                 table.insert(changes, change)
+--             end
+--         elseif not HTML.deepEqual(oldVal, newVal) then
+--             -- Values differ, record change
+--             table.insert(changes, {
+--                 path = path,
+--                 value = newVal
+--             })
+--         end
+--     end
+    
+--     return changes
+-- end
+
+--- Deep compare two values (tables or primitives)
+--- @param a any First value
+--- @param b any Second value
+--- @return boolean True if equal
+function HTML.deepEqual(a, b)
+    if type(a) ~= type(b) then return false end
+    
+    if type(a) ~= "table" then return a == b end
+    
+    -- Check if tables have different number of keys
+    local aCount = 0
+    local bCount = 0
+    for _ in pairs(a) do aCount = aCount + 1 end
+    for _ in pairs(b) do bCount = bCount + 1 end
+    if aCount ~= bCount then return false end
+    
+    -- Deep compare each key
+    for k, v in pairs(a) do
+        if not HTML.deepEqual(v, b[k]) then return false end
+    end
+    
+    return true
+end
+
+--- Get value from nested path in a table
+--- @param obj table The table to get value from
+--- @param path string Dot-separated path (e.g., "user.profile.name")
+--- @return any The value at the path, or nil
+function HTML.getByPath(obj, path)
+    if not path or path == "" then return obj end
+    local keys = {}
+    for key in path:gmatch("[^.]+") do
+        table.insert(keys, key)
+    end
+    
+    local current = obj
+    for _, key in ipairs(keys) do
+        if type(current) ~= "table" then return nil end
+        current = current[key]
+        if current == nil then return nil end
+    end
+    
+    return current
+end
+
+--- Set value at nested path in a table
+--- @param obj table The table to set value in
+--- @param path string Dot-separated path (e.g., "user.profile.name")
+--- @param value any The value to set
+--- @return boolean Returns true if value was changed
+function HTML.setByPath(obj, path, value)
+    if not path or path == "" then 
+        -- If path is empty, we're replacing the entire object
+        if type(obj) == "table" then
+            for k in pairs(obj) do
+                obj[k] = nil
+            end
+            for k, v in pairs(value) do
+                obj[k] = v
+            end
+            return true
+        end
+        return false
+    end
+    
+    local keys = {}
+    for key in path:gmatch("[^.]+") do
+        table.insert(keys, key)
+    end
+    
+    -- Navigate to the parent of the final key
+    local current = obj
+    for i = 1, #keys - 1 do
+        local key = keys[i]
+        if type(current[key]) ~= "table" then
+            current[key] = {}
+        end
+        current = current[key]
+    end
+    
+    local finalKey = keys[#keys]
+    local changed = not HTML.deepEqual(current[finalKey], value)
+    current[finalKey] = value
+    return changed
 end
 
 --- Deep merge two tables
@@ -2796,46 +4717,58 @@ function HTML.createComponent(fn, initialState)
 --- @return PatchObject[] A list of generated patch objects.
 function comp.setState(partial)
   local generatedPatches = {}
-
+  
+  -- Check if partial contains isClientOnly flag
+  local isClientOnly = partial.isClientOnly == true
+  
   for k, v in pairs(partial) do
-    -- Only update if value actually changed
-    if comp.state[k] ~= v then
-      comp.state[k] = v
-
-      -- Reactive variable? → Prefer update-var
-      if comp.reactiveBindings[k] then
-        table.insert(generatedPatches, {
-          type = "update-var",
-          varName = k,
-          value = v,
-          selector = string.format('[data-bind="%s"]', k)
-        })
-
-      -- Array? → Treat as list patch
-      elseif type(v) == "table" and #v > 0 then
-        table.insert(generatedPatches, HTML.patch_list(
-          string.format('[data-bind="%s"]', k),
-          v,
-          k .. "_template"
-        ))
-
-      -- Object-like table? → Treat as object patch
-      elseif type(v) == "table" then
-        table.insert(generatedPatches, HTML.patch_object(
-          string.format('[data-bind="%s"]', k),
-          v,
-          k .. "_template"
-        ))
-
-      else
-        -- Primitive value not bound → fallback to nested patch
-        table.insert(generatedPatches, HTML.patch_nested(
-          ":scope", -- Will be replaced if you store selector map
-          k,
-          v
-        ))
+    -- Skip isClientOnly key itself as it's not part of state
+    -- if k ~= "isClientOnly" then
+      -- Determine the actual key name to use
+      local stateKey = k
+      if isClientOnly and not k:match("^cs%.") then
+        stateKey = "cs." .. k
       end
-    end
+      
+      -- Only update if value actually changed
+    --   if comp.state[stateKey] ~= v then
+        comp.state[stateKey] = v
+
+        -- Reactive variable? → Prefer update-var
+        if comp.reactiveBindings[stateKey] then
+          table.insert(generatedPatches, {
+            type = "update-var",
+            varName = stateKey,
+            value = v,
+            selector = string.format('[data-bind="%s"]', stateKey)
+          })
+
+        -- Array? → Treat as list patch
+        elseif type(v) == "table" and #v > 0 then
+          table.insert(generatedPatches, HTML.patch_list(
+            string.format('[data-bind="%s"]', stateKey),
+            v,
+            stateKey .. "_template"
+          ))
+
+        -- Object-like table? → Treat as object patch
+        elseif type(v) == "table" then
+          table.insert(generatedPatches, HTML.patch_object(
+            string.format('[data-bind="%s"]', stateKey),
+            v,
+            stateKey .. "_template"
+          ))
+
+        else
+          -- Primitive value not bound → fallback to nested patch
+          table.insert(generatedPatches, HTML.patch_nested(
+            string.format('[data-bind="%s"]', stateKey),
+            stateKey,
+            v
+          ))
+        end
+    --   end
+    -- end
   end
 
   -- Always do a VDOM diff in case there are structural changes
@@ -2850,6 +4783,7 @@ function comp.setState(partial)
   comp.patches = generatedPatches
   return generatedPatches
 end
+
 
 --- Renders the component's VDOM based on its current state and provided props.
 --- @param props table? Properties to pass to the component's render function.
@@ -2960,7 +4894,10 @@ function HTML.App(config)
 
     -- 4. Include the patching/hydration handler
     if config.include_patch_client ~= false then
-        table.insert(head_elements, HTML.e("script", { type = "module", src = "/static/assets/js/patchClient.js" }))
+        --  table.insert(head_elements, HTML.e("script", { type = "module", src = "/static/assets/js/patchClientHelper.js" }))
+        --  table.insert(head_elements, HTML.e("script", { type = "module", src = "/static/assets/js/patchClientHelper2.js" }))
+        -- table.insert(head_elements, HTML.e("script", { type = "module", src = "/static/assets/js/patchClient.js" }))
+        
         table.insert(head_elements, HTML.e("script", { type = "module", src = "/static/assets/js/Fluid-Container.umd.min.js" }))
     end
 
