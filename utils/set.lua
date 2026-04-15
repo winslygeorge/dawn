@@ -55,11 +55,9 @@ end
 ---@param value K
 function Set:add(value)
   if self._immutable then
-    print("Attempting to add value to immutable set: " .. self:serialize())
     error("Cannot modify immutable set") 
     end
   self._data[value] = true
-  print("Added value to set: " .. self:serialize())
 end
 
 ---@generic K
@@ -157,7 +155,6 @@ function Set:map(fn)
   end
   return result
   -- for k in pairs(self._data) do
-  --   print("Mapping value: " .. tostring(k))
   --   result._data[fn(k)] = true
   -- end
   -- return result

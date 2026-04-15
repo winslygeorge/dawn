@@ -2574,7 +2574,6 @@ function HTML.tableToPath(tableRef, baseState)
         
         if type(current) == "table" then
 
-            print("Searching in table at path:", cjson.encode(currentPath))
             for k, v in pairs(current) do
                 local path = findPath(v, target, currentPath .. "." .. tostring(k))
                 if path then
@@ -2713,7 +2712,6 @@ function HTML.createCRUDEnhancedComponent(renderFn, initialState, initialClientS
 --- @return PatchObject[] Generated patches
 function comp.crud(operation, target, data, options, oldData)
     options = options or {}
-    print("[CRUD] Operation:", operation, "Target type:", type(target), " : oldData object : ", cjson.encode(oldData), " vs comp.state : ", cjson.encode(comp.state), "new data : ",  cjson.encode(data))
 
     -- Determine which state to use - NEVER mix oldData and comp.state
     local usingOldData = false
@@ -2820,7 +2818,6 @@ end
     
     -- Helper function to get a snapshot of current value (not reference)
     local function getCurrentValueSnapshot(state, fullPath)
-        print("Full path : ", fullPath, " : print getCurrentValueSnapshot : ", cjson.encode(state))
         local value = HTML.getByPath(state, fullPath)
         if value == nil then return nil end
         
@@ -2855,13 +2852,7 @@ end
     -- Create selector using binding path (for UI updates)
     local bindingPath = getBindingPath(normalized, stateType)
     local selector = options.selector or string.format('[data-bind="%s"]', bindingPath)
-    
-    print("[CRUD] Resolved - State Type:", stateType,
-          "Original Path:", path,
-          "Normalized:", normalized,
-          "Full State Path:", fullStatePath,
-          "Binding Path:", bindingPath,
-          "Is Client State:", isClientState)
+
     
     local newValue
     local oldValueSnapshot = getCurrentValueSnapshot(workingState, fullStatePath)
@@ -3244,7 +3235,6 @@ end
     end
     
     -- comp.patches = patches
-    print ("final Patches obj: - : ", cjson.encode(patches))
 
     return patches
 end
@@ -3370,12 +3360,8 @@ end
     
     --- Enhanced setClientState with table object support
 comp.setClientState = function(clientStatePartial)
-    print("\n[setClientState] =========================")
-    print("[setClientState] called")
-    print("[setClientState] input type:", type(clientStatePartial))
 
     if type(clientStatePartial) == "function" then
-        print("[setClientState] updater FUNCTION mode")
 
         local currentClientState = {}
         for k, v in pairs(comp.state) do
@@ -3384,32 +3370,25 @@ comp.setClientState = function(clientStatePartial)
             end
         end
 
-        print("[setClientState] currentClientState:", currentClientState)
 
         local updatedClientState = clientStatePartial(currentClientState)
-        print("[setClientState] updater returned:", updatedClientState)
 
         local changedPartial = { isClientOnly = true }
 
         for k, v in pairs(updatedClientState) do
             local oldValue = currentClientState[k]
             if not HTML.deepEqual(v, oldValue) then
-                print("  → change detected:", k, oldValue, "→", v)
                 changedPartial[k] = v
             else
-                print("  → no change:", k)
             end
         end
 
-        print("[setClientState] changedPartial:", changedPartial)
         return comp.setState(changedPartial)
 
     else
-        print("[setClientState] OBJECT mode")
 
         local changedPartial = { isClientOnly = true }
         for k, v in pairs(clientStatePartial) do
-            print("  → setting:", k, "=", v)
             changedPartial[k] = v
         end
 
@@ -3473,43 +3452,31 @@ function HTML.createComponent(fn, initialState, clientState)
 --- @param updater table|function Either a partial state object or an updater function
 --- @return PatchObject[] A list of generated patch objects.
 function comp.setState(updater)
-    print("\n[setState] ===============================")
-    print("[setState] called")
-    print("[setState] updater type:", type(updater))
 
     local generatedPatches = {}
     local isFunction = type(updater) == "function"
 
     -- Check if it's a client-only update
     local isClientOnly = not isFunction and updater.isClientOnly == true
-    print("[setState] isFunction:", isFunction)
-    print("[setState] isClientOnly:", isClientOnly)
 
     -- Resolve new partial state
     local newPartialState
     if isFunction then
-        print("[setState] updater is function → cloning state")
         local stateCopy = HTML.deepCopy(comp.state)
         newPartialState = updater(stateCopy)
-        print("[setState] updater function returned:", newPartialState)
     else
-        print("[setState] updater is object")
         newPartialState = updater
     end
 
     -- Track changes
     local changes = {}
     local oldStateSnapshot = HTML.deepCopy(comp.state)
-    print("[setState] oldStateSnapshot:", oldStateSnapshot)
 
     if isFunction then
-        print("[setState] FUNCTION MODE → replacing entire state")
         comp.state = newPartialState
 
         changes = HTML.findStateChanges(oldStateSnapshot, comp.state)
-        print("[setState] detected changes (function mode):", changes)
     else
-        print("[setState] PARTIAL MERGE MODE")
 
         for key, value in pairs(newPartialState) do
             if key ~= "isClientOnly" then
@@ -3521,12 +3488,8 @@ function comp.setState(updater)
 
                 local oldValue = HTML.getByPath(comp.state, actualKey)
 
-                print("[setState] checking key:", actualKey)
-                print("  ├─ old:", oldValue)
-                print("  └─ new:", value)
 
                 if not HTML.deepEqual(value, oldValue) then
-                    print("  → CHANGE DETECTED")
 
                     table.insert(changes, {
                         path = actualKey,
@@ -3536,13 +3499,11 @@ function comp.setState(updater)
 
                     HTML.setByPath(comp.state, actualKey, value)
                 else
-                    print("  → no change")
                 end
             end
         end
     end
 
-    print("[setState] total changes:", #changes)
 
     -- Generate patches
     for _, change in ipairs(changes) do
@@ -3560,13 +3521,8 @@ function comp.setState(updater)
             selector = string.format('[data-bind="%s"]', path)
         end
 
-        print("[setState] generating patch for:", path)
-        print("  ├─ selector:", selector)
-        print("  ├─ isClientState:", isClientState)
-        print("  └─ value type:", type(value))
 
         if comp.reactiveBindings[path] then
-            print("  → reactive update-var patch")
 
             table.insert(generatedPatches, {
                 type = "update-var",
@@ -3577,7 +3533,6 @@ function comp.setState(updater)
             })
 
         elseif type(value) == "table" and #value > 0 then
-            print("  → list patch")
 
             table.insert(generatedPatches, {
                 type = "list",
@@ -3588,7 +3543,6 @@ function comp.setState(updater)
             })
 
         elseif type(value) == "table" then
-            print("  → object patch")
 
             table.insert(generatedPatches, {
                 type = "object",
@@ -3599,7 +3553,6 @@ function comp.setState(updater)
             })
 
         else
-            print("  → nested primitive patch")
 
             table.insert(generatedPatches, {
                 type = "nested",
@@ -3613,7 +3566,6 @@ function comp.setState(updater)
 
     -- VDOM diff
     if #changes > 0 then
-        print("[setState] performing VDOM diff")
 
         local normalState = {}
         local clientState = {}
@@ -3626,13 +3578,10 @@ function comp.setState(updater)
             end
         end
 
-        print("[setState] normalState:", normalState)
-        print("[setState] clientState:", clientState)
 
         local newNode = comp.renderFn(normalState, comp.props, clientState)
         local domPatches = HTML.diff(comp.lastNode, newNode)
 
-        print("[setState] DOM patches generated:", #domPatches)
 
         comp.lastNode = newNode
 
@@ -3640,13 +3589,10 @@ function comp.setState(updater)
             table.insert(generatedPatches, p)
         end
     else
-        print("[setState] no changes → skipping VDOM diff")
     end
 
     comp.patches = generatedPatches
 
-    print("[setState] TOTAL patches returned:", #generatedPatches)
-    print("[setState] ===============================\n")
 
     return generatedPatches
 end
@@ -3695,13 +3641,9 @@ function HTML.createComponentWithClientState(options)
     local originalSetClientState = comp.setClientState
  -- In your reactive component's setClientState method (comp.setClientState in createDualStateComponent)
 comp.setClientState = function(clientStatePartial)
-    print("[DEBUG] reactive_component.setClientState called")
-    print("[DEBUG]   clientStatePartial type:", type(clientStatePartial))
-    print("[DEBUG]   Is function:", type(clientStatePartial) == "function")
     
     -- Handle both function and object updates
     if type(clientStatePartial) == "function" then
-        print("[DEBUG]   Processing function updater")
         -- Get current client state
         local currentClientState = {}
         for k, v in pairs(comp.state) do
@@ -3711,10 +3653,8 @@ comp.setClientState = function(clientStatePartial)
             end
         end
         
-        print("[DEBUG]   Current client state in reactive:", cjson.encode(currentClientState))
         -- Apply updater function
         local updatedClientState = clientStatePartial(currentClientState)
-        print("[DEBUG]   Updated client state from function:", cjson.encode(updatedClientState))
         
         -- Convert to prefixed state
         local prefixedPartial = { isClientOnly = true }
@@ -3722,20 +3662,15 @@ comp.setClientState = function(clientStatePartial)
             prefixedPartial[k] = v
         end
         
-        print("[DEBUG]   Calling setState with prefixed partial")
         return comp.setState(prefixedPartial)
     else
-        print("[DEBUG]   Processing object updater")
-        print("[DEBUG]   clientStatePartial:", cjson.encode(clientStatePartial))
         
         -- Object update - add "cs." prefix
         local prefixedPartial = { isClientOnly = true }
         for k, v in pairs(clientStatePartial) do
             prefixedPartial[k] = v
         end
-        print("[DEBUG]   prefixedPartial:", cjson.encode(prefixedPartial))
         
-        print("[DEBUG]   Calling setState")
         return comp.setState(prefixedPartial)
     end
 end
@@ -3760,64 +3695,48 @@ function HTML.createEnhancedComponent(fn, initialState)
     local originalSetState = comp.setState
 -- Enhanced debug for the dual state component's setState
 comp.setState = function(updater)
-    print("[DEBUG] ======== DUAL STATE COMPONENT setState START ========")
-    print("[DEBUG] updater type:", type(updater))
     
     local generatedPatches = {}
     local isFunction = type(updater) == "function"
     
     -- Check if it's a client-only update
     local isClientOnly = not isFunction and updater.isClientOnly == true
-    print("[DEBUG] isClientOnly:", isClientOnly)
-    print("[DEBUG] updater.isClientOnly:", not isFunction and updater.isClientOnly)
     
     -- Get the new state (either by merging or calling updater)
     local newPartialState
     if isFunction then
-        print("[DEBUG] Using function updater")
         -- Call the updater function with current state copy
         local stateCopy = HTML.deepCopy(comp.state)
         newPartialState = updater(stateCopy)
     else
-        print("[DEBUG] Using table updater")
         -- It's already a partial state object
         newPartialState = updater
     end
     
-    print("[DEBUG] newPartialState:", cjson.encode(newPartialState))
-    print("[DEBUG] Current comp.state keys:", table.concat(tableKeys(comp.state), ", "))
     
     -- Track what actually changed
     local changes = {}
     local oldStateSnapshot = HTML.deepCopy(comp.state)
-    print("[DEBUG] oldStateSnapshot:", cjson.encode(oldStateSnapshot))
     
     if isFunction then
-        print("[DEBUG] Replacing entire state (function updater)")
         comp.state = newPartialState
         
         -- Find all changes by comparing old and new state
         changes = HTML.findStateChanges(oldStateSnapshot, comp.state)
     else
-        print("[DEBUG] Merging partial state")
         -- When using partial state, merge changes
         for key, value in pairs(newPartialState) do
             if key ~= "isClientOnly" then
-                print("[DEBUG]   Processing key:", key, "value:", cjson.encode(value))
                 
                 -- Handle client state prefixing
                 local actualKey = key
                 if isClientOnly and not key:match("^cs%.") then
                     actualKey = "cs." .. key
-                    print("[DEBUG]     Added 'cs.' prefix ->", actualKey)
                 end
                 
                 local oldValue = HTML.getByPath(comp.state, actualKey)
-                print("[DEBUG]     oldValue:", cjson.encode(oldValue))
-                print("[DEBUG]     newValue:", cjson.encode(value))
                 
                 if not HTML.deepEqual(value, oldValue) then
-                    print("[DEBUG]     ✅ CHANGE DETECTED")
                     -- Store the change with the actual key
                     table.insert(changes, {
                         path = actualKey,
@@ -3827,27 +3746,20 @@ comp.setState = function(updater)
                     -- Update the state
                     HTML.setByPath(comp.state, actualKey, value)
                 else
-                    print("[DEBUG]     ❌ NO CHANGE (values are equal)")
                 end
             end
         end
     end
     
-    print("[DEBUG] Found", #changes, "changes:")
     for i, change in ipairs(changes) do
-        print("[DEBUG]   Change", i, "path:", change.path, "isClientState:", change.isClientState)
     end
     
     -- Generate patches for each change
-    print("[DEBUG] Generating patches...")
     for _, change in ipairs(changes) do
         local path = change.path
         local value = change.value
         local isClientState = change.isClientState
         
-        print("[DEBUG]   Processing change:", path)
-        print("[DEBUG]     isClientState:", isClientState)
-        print("[DEBUG]     value type:", type(value))
         
         -- Determine selector and varName
         local varName = path
@@ -3863,13 +3775,9 @@ comp.setState = function(updater)
             selector = string.format('[data-bind="%s"]', path)
         end
         
-        print("[DEBUG]     cleanVarName:", cleanVarName)
-        print("[DEBUG]     selector:", selector)
-        print("[DEBUG]     varName:", varName)
         
         -- Generate patch based on type
         if comp.reactiveBindings[path] then
-            print("[DEBUG]     Generating update-var patch (reactive binding)")
             table.insert(generatedPatches, {
                 type = "update-var",
                 varName = varName,
@@ -3879,7 +3787,6 @@ comp.setState = function(updater)
                 isClientOnly = isClientOnly
             })
         elseif type(value) == "table" and #value > 0 then
-            print("[DEBUG]     Generating list patch (array)")
             table.insert(generatedPatches, {
                 type = "list",
                 selector = selector,
@@ -3890,7 +3797,6 @@ comp.setState = function(updater)
                 isClientOnly = isClientOnly
             })
         elseif type(value) == "table" then
-            print("[DEBUG]     Generating object patch (object)")
             table.insert(generatedPatches, {
                 type = "object",
                 selector = selector,
@@ -3901,7 +3807,6 @@ comp.setState = function(updater)
                 isClientOnly = isClientOnly
             })
         else
-            print("[DEBUG]     Generating nested patch (primitive)")
             table.insert(generatedPatches, {
                 type = "nested",
                 selector = selector,
@@ -3914,15 +3819,11 @@ comp.setState = function(updater)
         end
     end
     
-    print("[DEBUG] Generated", #generatedPatches, "patches")
     for i, patch in ipairs(generatedPatches) do
-        print("[DEBUG]   Patch", i, "type:", patch.type, "varName:", patch.varName)
     end
     
     -- Check if VDOM diff should be done
-    print("[DEBUG] Checking if VDOM diff needed...")
     if #changes > 0 then
-        print("[DEBUG] Changes detected, doing VDOM diff")
         -- Separate state for rendering
         local normalState = {}
         local clientState = {}
@@ -3937,25 +3838,18 @@ comp.setState = function(updater)
             end
         end
         
-        print("[DEBUG]   normalState for rendering:", cjson.encode(normalState))
-        print("[DEBUG]   clientState for rendering:", cjson.encode(clientState))
         
         local newNode = renderFn(normalState, comp.props, clientState)
         local domPatches = HTML.diff(comp.lastNode, newNode)
         comp.lastNode = newNode
         
-        print("[DEBUG]   Generated", #domPatches, "DOM patches from diff")
         for i, p in ipairs(domPatches) do
-            print("[DEBUG]     DOM Patch", i, "type:", p.type)
             table.insert(generatedPatches, p)
         end
     else
-        print("[DEBUG] No changes, skipping VDOM diff")
     end
     
     comp.patches = generatedPatches
-    print("[DEBUG] ======== DUAL STATE COMPONENT setState END ========")
-    print("[DEBUG] Total patches to return:", #generatedPatches)
     return generatedPatches
 end
     
@@ -3993,27 +3887,19 @@ end
 -- Fixed reactive component setClientState
 function createReactiveComponentSetClientState(comp)
     return function(clientStatePartial)
-        print("[DEBUG] ======== REACTIVE COMPONENT setClientState START ========")
-        print("[DEBUG] clientStatePartial type:", type(clientStatePartial))
         
         -- Handle both function and object updates
         if type(clientStatePartial) == "function" then
-            print("[DEBUG] Processing function updater")
             -- Get current client state
             local currentClientState = comp.getClientState()
-            print("[DEBUG] Current client state from getClientState():", cjson.encode(currentClientState))
             
             -- Apply updater function
             local updatedClientState = clientStatePartial(currentClientState)
-            print("[DEBUG] Updated client state from function:", cjson.encode(updatedClientState))
             
             -- Find ONLY the changes
             local changes = HTML.findStateChanges(currentClientState, updatedClientState)
-            print("[DEBUG] Actual changes detected:", #changes)
             
             if #changes == 0 then
-                print("[DEBUG] No changes detected, returning empty patches")
-                print("[DEBUG] ======== REACTIVE COMPONENT setClientState END ========")
                 return {}
             end
             
@@ -4022,17 +3908,11 @@ function createReactiveComponentSetClientState(comp)
             for _, change in ipairs(changes) do
                 -- Set the changed value
                 changedPartial[change.path] = change.value
-                print("[DEBUG]   Including change in partial:", change.path, "=", cjson.encode(change.value))
             end
             
-            print("[DEBUG] Changed partial (only actual changes):", cjson.encode(changedPartial))
-            print("[DEBUG] Calling comp.setState with changedPartial")
             local patches = comp.setState(changedPartial)
-            print("[DEBUG] ======== REACTIVE COMPONENT setClientState END ========")
             return patches
         else
-            print("[DEBUG] Processing object updater")
-            print("[DEBUG] clientStatePartial:", cjson.encode(clientStatePartial))
             
             -- Object update
             local changedPartial = { isClientOnly = true }
@@ -4040,9 +3920,7 @@ function createReactiveComponentSetClientState(comp)
                 changedPartial[k] = v
             end
             
-            print("[DEBUG] Calling comp.setState with changedPartial")
             local patches = comp.setState(changedPartial)
-            print("[DEBUG] ======== REACTIVE COMPONENT setClientState END ========")
             return patches
         end
     end
@@ -4051,67 +3929,52 @@ end
 -- Fixed dual state component setState
 function createDualStateComponentSetState(comp, renderFn)
     return function(updater)
-        print("[DEBUG] ======== DUAL STATE COMPONENT setState START ========")
-        print("[DEBUG] updater type:", type(updater))
         
         local generatedPatches = {}
         local isFunction = type(updater) == "function"
         
         -- Check if it's a client-only update
         local isClientOnly = not isFunction and updater.isClientOnly == true
-        print("[DEBUG] isClientOnly:", isClientOnly)
         if not isFunction then
-            print("[DEBUG] updater.isClientOnly:", updater.isClientOnly)
         end
         
         -- Get the new state (either by merging or calling updater)
         local newPartialState
         if isFunction then
-            print("[DEBUG] Using function updater")
             -- Call the updater function with current state copy
             local stateCopy = HTML.deepCopy(comp.state)
             newPartialState = updater(stateCopy)
         else
-            print("[DEBUG] Using table updater")
             -- It's already a partial state object
             newPartialState = updater
         end
         
-        print("[DEBUG] newPartialState:", cjson.encode(newPartialState))
-        print("[DEBUG] Current comp.state keys:", table.concat(tableKeys(comp.state), ", "))
         
         -- Track what actually changed
         local changes = {}
         local oldStateSnapshot = HTML.deepCopy(comp.state)
         
         if isFunction then
-            print("[DEBUG] Replacing entire state (function updater)")
             comp.state = newPartialState
             
             -- Find all changes by comparing old and new state
             changes = HTML.findStateChanges(oldStateSnapshot, comp.state)
         else
-            print("[DEBUG] Merging partial state")
             -- When using partial state, merge changes
             for key, value in pairs(newPartialState) do
                 if key ~= "isClientOnly" then
-                    print("[DEBUG]   Processing key:", key, "value:", cjson.encode(value))
                     
                     -- Handle client state prefixing
                     local actualKey = key
                     if isClientOnly and not key:match("^cs%.") then
                         actualKey = "cs." .. key
-                        print("[DEBUG]     Added 'cs.' prefix ->", actualKey)
                     end
                     
                     local oldValue = HTML.getByPath(comp.state, actualKey)
                     local oldValueJson = cjson.encode(oldValue)
                     local newValueJson = cjson.encode(value)
-                    print("[DEBUG]     oldValue:", oldValueJson)
-                    print("[DEBUG]     newValue:", newValueJson)
                     
                     if not HTML.deepEqual(value, oldValue) then
-                        print("[DEBUG]     ✅ CHANGE DETECTED")
                         -- Store the change with the actual key
                         table.insert(changes, {
                             path = actualKey,
@@ -4121,27 +3984,20 @@ function createDualStateComponentSetState(comp, renderFn)
                         -- Update the state
                         HTML.setByPath(comp.state, actualKey, value)
                     else
-                        print("[DEBUG]     ❌ NO CHANGE (values are equal)")
                     end
                 end
             end
         end
         
-        print("[DEBUG] Found", #changes, "changes:")
         for i, change in ipairs(changes) do
-            print("[DEBUG]   Change", i, "path:", change.path, "isClientState:", change.isClientState)
         end
         
         -- Generate patches for each change
-        print("[DEBUG] Generating patches...")
         for _, change in ipairs(changes) do
             local path = change.path
             local value = change.value
             local isClientState = change.isClientState
             
-            print("[DEBUG]   Processing change:", path)
-            print("[DEBUG]     isClientState:", isClientState)
-            print("[DEBUG]     value type:", type(value))
             
             -- Determine selector and varName
             local varName = path
@@ -4157,9 +4013,6 @@ function createDualStateComponentSetState(comp, renderFn)
                 selector = string.format('[data-bind="%s"]', path)
             end
             
-            print("[DEBUG]     cleanVarName:", cleanVarName)
-            print("[DEBUG]     selector:", selector)
-            print("[DEBUG]     varName:", varName)
             
             -- Generate patch based on type
             local patch = {
@@ -4171,24 +4024,20 @@ function createDualStateComponentSetState(comp, renderFn)
             
             if comp.reactiveBindings[path] then
                 -- Reactive variable → update-var patch
-                print("[DEBUG]     Generating update-var patch (reactive binding)")
                 patch.type = "update-var"
                 patch.value = value
             elseif type(value) == "table" and #value > 0 then
                 -- Array → list patch
-                print("[DEBUG]     Generating list patch (array)")
                 patch.type = "list"
                 patch.items = value
                 patch.template = varName .. "_template"
             elseif type(value) == "table" then
                 -- Object → object patch
-                print("[DEBUG]     Generating object patch (object)")
                 patch.type = "object"
                 patch.object = value
                 patch.template = varName .. "_template"
             else
                 -- Primitive value → nested patch
-                print("[DEBUG]     Generating nested patch (primitive)")
                 patch.type = "nested"
                 patch.path = varName
                 patch.value = value
@@ -4197,15 +4046,11 @@ function createDualStateComponentSetState(comp, renderFn)
             table.insert(generatedPatches, patch)
         end
         
-        print("[DEBUG] Generated", #generatedPatches, "patches")
         for i, patch in ipairs(generatedPatches) do
-            print("[DEBUG]   Patch", i, "type:", patch.type, "varName:", patch.varName, "isClientOnly:", patch.isClientOnly)
         end
         
         -- Check if VDOM diff should be done
-        print("[DEBUG] Checking if VDOM diff needed...")
         if #changes > 0 then
-            print("[DEBUG] Changes detected, doing VDOM diff")
             -- Separate state for rendering
             local normalState = {}
             local clientState = {}
@@ -4220,16 +4065,12 @@ function createDualStateComponentSetState(comp, renderFn)
                 end
             end
             
-            print("[DEBUG]   normalState for rendering:", cjson.encode(normalState))
-            print("[DEBUG]   clientState for rendering:", cjson.encode(clientState))
             
             local newNode = renderFn(normalState, comp.props, clientState)
             local domPatches = HTML.diff(comp.lastNode, newNode)
             comp.lastNode = newNode
             
-            print("[DEBUG]   Generated", #domPatches, "DOM patches from diff")
             for i, p in ipairs(domPatches) do
-                print("[DEBUG]     DOM Patch", i, "type:", p.type)
                 -- Add client state flags to DOM patches if they affect client state bindings
                 if p.attrs and (p.attrs["data-bind-client"] or (p.attrs.attributes and p.attrs.attributes["data-bind-client"])) then
                     p.isClientState = true
@@ -4238,12 +4079,9 @@ function createDualStateComponentSetState(comp, renderFn)
                 table.insert(generatedPatches, p)
             end
         else
-            print("[DEBUG] No changes, skipping VDOM diff")
         end
         
         comp.patches = generatedPatches
-        print("[DEBUG] ======== DUAL STATE COMPONENT setState END ========")
-        print("[DEBUG] Total patches to return:", #generatedPatches)
         return generatedPatches
     end
 end

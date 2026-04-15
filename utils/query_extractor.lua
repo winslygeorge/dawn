@@ -20,7 +20,6 @@ end
 ---               table if no query parameters are found.
 function URLParamExtractor:extract_from_url_like_string(url_like_string)
     if not url_like_string then
-        print("Error: Input url_like_string is nil.")
         return {} -- Or return nil, depending on your error handling strategy
       end
       -- The rest of your function logic

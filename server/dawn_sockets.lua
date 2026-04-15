@@ -180,10 +180,8 @@ end
 
 -- create function to stop heartbeat
 function DawnSockets:stop_heartbeat()
-    print("[HEARTBEAT] Stopping heartbeat: ", self.heartbeat_timer_id)
     local timerID = self.heartbeat_timer_id
     if timerID then
-        print("[HEARTBEAT] Stopping heartbeat timer: ", timerID)
         -- self.server.clearTimer(2)
         self.heartbeat_timer_id = nil
         self.logger:log(log_level.INFO, "[HEARTBEAT] Stopped heartbeat", "DawnSockets")

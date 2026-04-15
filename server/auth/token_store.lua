@@ -38,7 +38,6 @@ local function save_store()
         file:close()
     end
 else 
-    print("Store is empty")
 end
 end
 
@@ -197,7 +196,6 @@ function M.cleanup_all()
 
     if removed_total > 0 then
         save_store()
-        print("[TokenStore] Cleaned up " .. removed_total .. " expired refresh tokens.")
     end
 
     return removed_total

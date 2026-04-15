@@ -54,7 +54,6 @@ end
 
 
 -- function Supervisor:logFailure(child)
---     print("logFailure called for:", child.name) -- Add this line
 --     local now = os.time() * 1000
 --     self.failedProcesses[child.name] = self.failedProcesses[child.name] or {}
     
@@ -147,7 +146,6 @@ function Supervisor:scheduleRestart(child)
     self.logger:log(log_level.DEBUG, "Scheduling restart for " .. child.name, "Supervisor")
     self.pendingRestarts[child.name] = true
 
-    print("self.failedProcesses[child.name]:", self.failedProcesses[child.name])
 
     self.scheduler:add_task(
         "restart_" .. child.name,

@@ -74,7 +74,6 @@ function TrieNode:insert(method, route, handler)
 
     -- ✅ FIX: Store multiple handlers by method
     if node.handlers[method] then
-        print(log_level.WARN, string.format("Route conflict: %s %s is being overridden.", method, route), "DawnServer")
     end
     
     node.isEndOfPath = true
@@ -233,18 +232,14 @@ function DawnServer:register_reactive_component(component, key)
     -- Validate required methods
     for _, method in ipairs(REQUIRED_COMPONENT_METHODS) do
         if type(component[method]) ~= "function" then
-            -- print(string.format("[Dawn] ⚠️ Warning: Component under key '%s' is missing method '%s'", key, method))
         end
     end
 
     if(self.shared_state[key]) then
-            print(string.format("[Dawn] X ALready Registered reactive component under key '%s'", key))
 
     else
 
-            print(string.format("[Dawn] ⏳ Registering reactive component under key '%s'...", key))
             self.shared_state[key] = component
-                -- print(string.format("[Dawn] ✅ Registered reactive component under key '%s'", key))
 
     end
 end
@@ -258,7 +253,6 @@ function DawnServer:get_component(key)
 
     -- print every comp key in shared_state
     for k, v in pairs(self.shared_state) do
-        print("Component Key:", k)
     end
     
     return self.shared_state[key]
@@ -606,9 +600,7 @@ local function log_invisible_chars(str, label)
         end
     end
     if has_invisible then
-        print("DEBUG", label .. " contains invisible characters (byte codes): " .. output, "DawnServer")
     else
-        print("label doesn't have invisible characters")
     end
 end
 
@@ -663,7 +655,6 @@ end
 
 
 function DawnServer:run()
-    print("DawnServer is starting...")
     if self.running then return end
     self.running = true
     -- self.uws.create_app()
@@ -789,7 +780,6 @@ if content_type:sub(1, #multipart_marker) == multipart_marker then
 
     local is_tempfile = false
 
-    -- print("chunk : ", chunk)
 
     -- Process the chunk (this should be inside a loop that receives chunks)
     if type(chunk) == "string" and chunk:sub(1, 6) == "@file:" then
@@ -801,7 +791,6 @@ if content_type:sub(1, #multipart_marker) == multipart_marker then
                 "DawnServer")
         else
             is_tempfile = true
-            -- print("isfile = ", tostring(is_tempfile))
             while true do
                 local data = f:read(8192)
                 if not data then break end
@@ -811,7 +800,6 @@ if content_type:sub(1, #multipart_marker) == multipart_marker then
         end
     else
         -- Normal in-memory body - feed the chunk to parser
-        -- print("received a normal in memory body")
         req.form_data_parser:feed(chunk or "")
     end
 
@@ -820,7 +808,6 @@ if content_type:sub(1, #multipart_marker) == multipart_marker then
         -- Finalize the parsing (feed boundary end if needed)
         req.form_data_parser:feed("") -- Sometimes needed to flush final data
 
-        -- print("is last  -> ", req.form_data_parser.form_data_parsed)
                 
         -- Call the handler with the parsed form data
         local ok, err = pcall(handler, req, res, req.form_data_parser.form_data_parsed)
@@ -907,7 +894,6 @@ end
         local get_id_func = getmetatable(ws).get_id
         return get_id_func(ws)
     else
-        print("Error: WebSocket object is nil or does not have get_id method.")
         return nil
     end
 end
@@ -917,13 +903,7 @@ local function registerRouteHandlers(node, prefix)
         -- ✅ FIX: Iterate through ALL methods for this path
         for method, handler_func in pairs(node.handlers) do
             local routePath = prefix
-            local method_lower = method:lower()
-            
-            print(log_level.DEBUG, 
-                string.format("📝 Registering route: %s %s", method:upper(), routePath), 
-                "RouteRegistration"
-            )
-            
+            local method_lower = method:lower()   
             if method_lower == "ws" then
                 self.uws.ws(routePath, function(ws, event, message, code, reason)
                     if event == "open" then
@@ -937,14 +917,12 @@ local function registerRouteHandlers(node, prefix)
                         fake_res.writeHeader = function() return fake_res end
                         fake_res.writeStatus = function() return fake_res end
                         fake_res.send = function(...)
-                            print( "[WS Middleware] Blocking upgrade:", ..., " : dawn_server")
                             ws:close()
                         end
                         local ok = executeMiddleware(self_ref, fake_req, fake_res, routePath, self_ref.middlewares, 1)
                         if ok then
                             self_ref.dawn_sockets_handler:handle_open( ws, message)
                         else
-                            print("[WS] Connection rejected by middleware:", routePath)
                         end
                     elseif event == "message" then
                         self_ref.dawn_sockets_handler:handle_message( ws, message, code)
@@ -980,11 +958,9 @@ local function registerRouteHandlers(node, prefix)
                                     -- If no specific SSE handler is found, send a default message
                                     self.uws.sse_send(sse_id, "Default SSE message", "default")
                                     self:sse_close(sse_id)
-                                    print("[SSE] No handler found for SSE route:", routePath)
                                 end
                             end)
                         else
-                            print("[SSE] Connection rejected by middleware:", routePath)
                         end
                     end)
                 else
@@ -1162,7 +1138,6 @@ function DawnServer:restart_run()
                             fake_res.writeHeader = function() return fake_res end
                             fake_res.writeStatus = function() return fake_res end
                             fake_res.send = function(...)
-                                print("[WS Middleware] Blocking upgrade:", ...)
                                 ws:close()
                             end
                             local ok = executeMiddleware(self_ref, fake_req, fake_res, routePath, self_ref.middlewares, 1)
@@ -1254,7 +1229,6 @@ end
 function on_restart_register(app)
 
   if not restart_self then
-      print("[Lua] Error: restart_self is nil, cannot re-register routes.")
       return
   end
 
@@ -1303,7 +1277,6 @@ function DawnServer:start()
             -- 🔑 Use new unified restart (returns new userdata!)
             self.uws = self.uws.restart_reregister(self.port, function(success, err)
                 if success then
-                    print("✅ Restart complete on port " .. self.port)
                        -- Notify clients only after successful restart
                     self.shared_state.sockets:broadcast_to_all({
                         type = "reload",
@@ -1314,7 +1287,6 @@ function DawnServer:start()
                     self.dev_watcher:start()
             end
                 else
-                    print("❌ Restart failed:", err)
                 end
             end)
 

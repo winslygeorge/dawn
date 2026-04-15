@@ -298,13 +298,9 @@ function Parser.export(parsed_html_table)
         if file then
             file:write(file_content)
             file:close()
-            print("\nExported Lua table to: " .. output_filename)
-            print("You can now load this table in another Lua script like: local data = require(\"exported_html_data\")")
         else
-            print("\nError exporting file: " .. err)
         end
     else
-        print("\nSkipping file export: No Lua table to export.")
     end
 end
 

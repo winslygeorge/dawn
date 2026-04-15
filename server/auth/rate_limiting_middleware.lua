@@ -9,7 +9,6 @@ return function ()
             local url = (req and req._raw and req._raw:getUrl()) or (req.url and req.url or "") or nil
             if url and  url:find("/sse/") then
                 -- If the request is for Server-Sent Events (SSE), we can skip rate limiting
-                print("Skipping rate limiting for SSE request.")
                 next()
                 return
             end
@@ -47,7 +46,6 @@ return function ()
 
         -- If IP is still not found, you might want to log an error or use a placeholder
         if not ip or ip == "" then
-            print("Warning: Could not determine client IP address for rate limiting.")
             -- Decide how to handle this: either allow the request (less secure)
             -- or block it (more secure, but might block legitimate requests if IP detection fails).
             -- For demonstration, we'll use a generic placeholder, but in production,
@@ -68,7 +66,6 @@ return function ()
         end
 
         if record.count > max_requests then
-            print("Too many requests from IP: " .. ip)
             res:writeStatus(429):send("Too Many Requests")
             return
         end

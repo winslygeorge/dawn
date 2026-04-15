@@ -1,9 +1,5 @@
 -- Advanced logger with timestamps and structured output
 local logger = logger or {
-    info  = function(...) print(os.date("[%Y-%m-%d %H:%M:%S] INFO:"), ...) end,
-    warn  = function(...) print(os.date("[%Y-%m-%d %H:%M:%S] WARN:"), ...) end,
-    error = function(...) print(os.date("[%Y-%m-%d %H:%M:%S] ERROR:"), ...) end,
-    debug = function(...) print(os.date("[%Y-%m-%d %H:%M:%S] DEBUG:"), ...) end,
 }
 
 -- Advanced PatchQueue
@@ -90,7 +86,6 @@ function PatchQueue:clear()
 end
 
 -- Example of use:
--- PatchQueue:on_push(function(patch) print("Received patch:", patch.id) end)
 -- PatchQueue:push({id=123, data="test"})
 
 return PatchQueue

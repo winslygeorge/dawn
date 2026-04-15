@@ -25,7 +25,6 @@ function Scheduler:add_task(id, func, delay, priority, retries, maxExecTime)
     local now = luv.now() / 1000
     if self.task_map[id] then return end -- Prevent duplicate tasks
     if self.queue:get_size() >= self.maxQueueSize then
-        print("[Warning] Task queue is full! Dropping task:", id)
         self.logger:log(log_level.WARN, "Task queue is full! Dropping task: ".. id, "Scheduler")
 
         return
@@ -57,19 +56,16 @@ function Scheduler:execute_task(task)
     local execDuration = (luv.now() / 1000) - startTime
 
     if not success then
-        -- print("[Error] Task failed:", task.id, "-", err)
         self.logger:log(log_level.ERROR, "Task failed: ".. task.id, "Scheduler")
 
         task.retry_attempts = task.retry_attempts + 1
         if task.retry_attempts < task.retries then
             self:retry_task(task)
         else
-            -- print("[Fail] Task permanently failed:", task.id)
             self.logger:log(log_level.ERROR, "Task permanently failed: ".. task.id, "Scheduler")
 
         end
     elseif execDuration > task.maxExecTime then
-        -- print("[Warning] Task", task.id, "exceeded max execution time!")
         self.logger:log(log_level.WARN, "Task ".. task.id.." exceeded max execution time! ", "Scheduler")
 
     end

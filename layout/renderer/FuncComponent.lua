@@ -89,7 +89,6 @@ end,
     end
 
    function new_component:hotReload()
-    print("Hot reload called")
     if not self._source_file then
         log(log_level.WARN, "[FunctionalComponent] ⚠️ Cannot hot reload (no source file tracked).")
         return
@@ -487,7 +486,6 @@ end
 
         --print comp keys 
         for k, v in pairs(self.clients) do
-            print("Client Key:", k, "Value:", v)
         end
 
         local hadRedisState = false
@@ -915,9 +913,6 @@ end
 
 
 function new_component:pruneClientStates(max_count, max_age)
-    print("[DEBUG] pruneClientStates called")
-    print("[DEBUG]   max_count:", max_count)
-    print("[DEBUG]   max_age:", max_age)
     
     local current_time = os_time()
     local to_remove = {}
@@ -931,7 +926,6 @@ function new_component:pruneClientStates(max_count, max_age)
         
         if last_seen and (current_time - last_seen) > max_age then
             table.insert(to_remove, key)
-            print("[DEBUG]   Marked for removal (age):", key, "age:", current_time - last_seen)
         end
     end
     
@@ -947,7 +941,6 @@ function new_component:pruneClientStates(max_count, max_age)
         for i = 1, count - max_count do
             if sorted[i] and not tableContains(to_remove, sorted[i].key) then
                 table.insert(to_remove, sorted[i].key)
-                print("[DEBUG]   Marked for removal (count):", sorted[i].key)
             end
         end
     end
@@ -957,7 +950,6 @@ function new_component:pruneClientStates(max_count, max_age)
         self.client_states[key] = nil
     end
     
-    print("[DEBUG]   Removed", #to_remove, "client states")
 end
 
 
@@ -1058,7 +1050,6 @@ function new_component:setClientState(ws_id, updater, comp_key)
     -- ------------------------------------------------------------------------
     local key = self.client_token or ws_id
 
-    print(" ws_id key : ", ws_id, self.client_token)
     if not key then
         if log then log(log_level.WARN, "[setClientState] No client key available") end
         return {}
@@ -1187,7 +1178,6 @@ function new_component:setClientState(ws_id, updater, comp_key)
         local redis = server.dawn_sockets_handler.state_management.redis
         local redis_key = string.format("client_state:%s:%s", patch_key, key)
 
-        print("Redis key : ", redis_key)
 
         -- Use pcall to avoid crashing on Redis errors
         local ok, err = pcall(function()
@@ -1210,9 +1200,6 @@ end
 
 -- Helper function to add CRUD support to setClientState calls
 function new_component:clientCRUD(operation, target, data, options)
-    print("[DEBUG][clientCRUD] Creating client CRUD operation")
-    print(string.format("[DEBUG][clientCRUD] Operation: %s", operation))
-    print(string.format("[DEBUG][clientCRUD] Target: %s", target))
     
     -- Ensure target has cs. prefix for client state
     local clientTarget = target
@@ -1236,7 +1223,6 @@ end
 
 -- Fixed getClientState that doesn't nest state
 function new_component:getClientState(ws_id)
-    print("[DEBUG] getClientState called")
     local key = self.client_token or ws_id
     
     if not key then
@@ -1254,7 +1240,6 @@ function new_component:getClientState(ws_id)
     
     if slot.state and slot.state.state then
         -- Double nested: slot.state.state
-        print("[DEBUG]   Found double nested state")
         for k, v in pairs(slot.state.state) do
             if k ~= "state" then  -- Skip any nested state properties
                 cleanState[k] = v
@@ -1262,7 +1247,6 @@ function new_component:getClientState(ws_id)
         end
     elseif slot.state then
         -- Single nested: slot.state
-        print("[DEBUG]   Found single nested state")
         for k, v in pairs(slot.state) do
             if k ~= "state" then  -- Skip any nested state properties
                 cleanState[k] = v
@@ -1270,7 +1254,6 @@ function new_component:getClientState(ws_id)
         end
     else
         -- No nesting
-        print("[DEBUG]   No nesting found")
         for k, v in pairs(slot) do
             if k ~= "state" and k ~= "_last_seen" then  -- Skip internal fields
                 cleanState[k] = v
@@ -1278,13 +1261,11 @@ function new_component:getClientState(ws_id)
         end
     end
     
-    print("[DEBUG]   Clean state keys:", table.concat(tableKeys(cleanState), ", "))
     return cleanState
 end
 
 -- Helper to clean up existing nested state
 function new_component:cleanupNestedState()
-    print("[DEBUG] Cleaning up nested state...")
     for key, slot in pairs(self.client_states) do
         local originalSlot = slot
         
@@ -1295,14 +1276,12 @@ function new_component:cleanupNestedState()
             
             -- Check for double nesting: slot.state.state
             if slot.state and slot.state.state then
-                print("[DEBUG]   Flattening double nested state for key:", key)
                 slot.state = slot.state.state
                 hasChanges = true
             end
             
             -- Check for single nesting: slot.state
             if slot.state then
-                print("[DEBUG]   Flattening single nested state for key:", key)
                 -- Move all properties from slot.state to slot
                 for k, v in pairs(slot.state) do
                     if k ~= "state" then  -- Don't copy nested state
@@ -1325,7 +1304,6 @@ function new_component:cleanupNestedState()
             slot._last_seen = originalSlot._last_seen
         end
     end
-    print("[DEBUG] Nested state cleanup complete")
 end
 
 
@@ -1514,7 +1492,6 @@ function tableKeys(tbl)
 end
 
 function new_component:updateParentClientState(ws_id, newState)
-    print("[updateParentClientState] Updating parent client state with:", newState)
     assert(type(newState) == "table", "updateParentClientState expects a table")
     if not self.parent then
         log(log_level.WARN, "[FunctionalComponent] ⚠️ No parent component to update clientState")
@@ -1525,7 +1502,6 @@ function new_component:updateParentClientState(ws_id, newState)
     if self.parent.reactive_component and 
        (self.parent.reactive_component.crud or self.parent.reactive_component.set) then
 
-        print("[updateParentClientState] Using CRUD operation to update parent client state")
         -- Use CRUD operation if available
         return self.parent:setClientState(ws_id, {
             _operation = HTML.CRUD_OPERATIONS.UPDATE,
@@ -1542,26 +1518,18 @@ end
 -- Enhanced setState with CRUD support
 -- Enhanced setState with CRUD support
 function new_component:setState(newState, opts)
-    -- print("[DEBUG][setState] === ENTERING setState ===")
-    -- print(string.format("[DEBUG][setState] Called with newState type: %s", type(newState)))
-    -- print(string.format("[DEBUG][setState] Component key: %s", tostring(self.component_key)))
-    -- print(string.format("[DEBUG][setState] Has server: %s", tostring(self.server ~= nil)))
-    -- print(string.format("[DEBUG][setState] Has reactive_component: %s", tostring(self.reactive_component ~= nil)))
     
     -- Allow both table and function syntax
     if type(newState) ~= "table" and type(newState) ~= "function" then
-        print(string.format("[ERROR][setState] Invalid newState type: %s", type(newState)))
         error("setState expects a table or function", 2)
     end
     
     -- Check for client-only flag
     if type(newState) == "table" and newState.isClientOnly then
-        print("[ERROR][setState] Attempted to persist client-only state")
         error("Attempted to persist client-only state into component_state", 2)
     end
     
     local patches = {}
-    print("[DEBUG][setState] Initialized empty patches array")
     
     -- Check if we have CRUD-enhanced component
     local useCRUD = self.reactive_component and 
@@ -1569,94 +1537,54 @@ function new_component:setState(newState, opts)
                     self.reactive_component.set or 
                     self.reactive_component.append)
     
-    print(string.format("[DEBUG][setState] useCRUD check result: %s", tostring(useCRUD)))
-
-    print(string.format("[DEBUG][setState] newState content: %s", 
-          type(newState) == "table" and cjson.encode(newState) or tostring(newState)))
-    
     if useCRUD and type(newState) == "table" and newState._operation then
         -- CRUD operation style update for normal state
-        -- print("[DEBUG][setState] Processing CRUD operation path")
-        -- print(string.format("[DEBUG][CRUD] Operation: %s", tostring(newState._operation)))
-        -- print(string.format("[DEBUG][CRUD] Target: %s", tostring(newState._target)))
-        -- print(string.format("[DEBUG][CRUD] Has data: %s", tostring(newState._data ~= nil)))
-        -- print(string.format("[DEBUG][CRUD] Has options: %s", tostring(newState._options ~= nil)))
         
         local operation = newState._operation
         local target = newState._target
         local data = newState._data
         local options = newState._options or {}
         
-        print("[DEBUG][CRUD] Calling reactive_component.crud()")
         patches = self.reactive_component.crud(operation, target, data, options) or {}
-        print(string.format("[DEBUG][CRUD] Received %d patches from crud()", #patches))
         
     else
         -- Traditional update
-        print("[DEBUG][setState] Processing traditional update path")
         
         -- Check if it's an updater function
         if type(newState) == "function" then
-            print("[DEBUG][setState] Processing updater function")
-            print(string.format("[DEBUG][setState] Current state size: %d", 
-                  self.state and #self.state or 0))
             
             -- Call the updater function with current state
             local currentStateCopy = {}
             for k, v in pairs(self.state or {}) do
                 currentStateCopy[k] = v
             end
-            print(string.format("[DEBUG][setState] Created copy with %d items", 
-                  #currentStateCopy))
             
-            print("[DEBUG][setState] Calling updater function...")
             local updatedState = newState(currentStateCopy)
-            print("[DEBUG][setState] Updater function returned : \n", cjson.encode(updatedState))
             -- Validate the result
             if type(updatedState) ~= "table" then
-                print(string.format("[ERROR][setState] Updater returned non-table: %s", 
-                      type(updatedState)))
                 error("Updater function must return a table", 2)
             end
             
-            print(string.format("[DEBUG][setState] Updater returned table with %d items", 
-                  #updatedState))
-            print("[DEBUG][setState] Calling reactive_component.setState() with updated state")
             patches = self.reactive_component.setState(updatedState) or {}
-            print(string.format("[DEBUG][setState] Received %d patches from setState()", #patches))
         else
             -- It's a partial state object
-            print("[DEBUG][setState] Processing partial state object")
-            print(string.format("[DEBUG][setState] New state has %d keys", 
-                  newState and #newState or 0))
-            print("[DEBUG][setState] Calling reactive_component.setState() with newState")
             patches = self.reactive_component.setState(newState) or {}
-            print(string.format("[DEBUG][setState] Received %d patches from setState()", #patches))
         end
     end
     
     -- Update component namespace for patches
     if self.component_key and #patches > 0 then
-        print(string.format("[DEBUG][setState] Updating namespace for %d patches", #patches))
         for i, patch in ipairs(patches) do
-            print(string.format("[DEBUG][setState] Processing patch %d/%d", i, #patches))
-            print(string.format("[DEBUG][setState] Patch path: %s", 
-                  tostring(patch.varName or patch.path)))
             
             if self.server and self.server.get_patch_namespace then
                 patch.component = self.server:get_patch_namespace(
                     self.component_key, 
                     patch.varName or patch.path
                 )
-                print(string.format("[DEBUG][setState] Set component namespace to: %s", 
-                      tostring(patch.component)))
             else
-                print("[DEBUG][setState] No get_patch_namespace method available")
             end
         end
     else
-        print(string.format("[DEBUG][setState] No patches or no component_key. Patches: %d, Key: %s", 
-              #patches, tostring(self.component_key)))
     end
     
     -- Persist to Redis if needed
@@ -1665,95 +1593,55 @@ function new_component:setState(newState, opts)
        self.server.dawn_sockets_handler.state_management.redis and 
        self.component_key then
         
-        print("[DEBUG][Redis] Starting Redis persistence")
-        print(string.format("[DEBUG][Redis] Component key: %s", self.component_key))
         
         local redis = self.server.dawn_sockets_handler.state_management.redis
         local key = "component_state:" .. self.component_key
-        print(string.format("[DEBUG][Redis] Redis key: %s", key))
         
         local ok, err = pcall(function()
             -- Get current state from reactive component (after update)
             local currentState = self.state or {}
             if self.reactive_component and self.reactive_component.getNormalState then
-                print("[DEBUG][Redis] Getting normal state from reactive component")
                 currentState = self.reactive_component:getNormalState()
             end
             
-            print(string.format("[DEBUG][Redis] State size for persistence: %d", #currentState))
             
             local jsonData = cjson.encode(currentState)
-            print(string.format("[DEBUG][Redis] JSON size: %d bytes", #jsonData))
             
             redis:set(key, jsonData)
-            print("[DEBUG][Redis] SET command executed")
             
             redis:expire(key, 86400)
-            print("[DEBUG][Redis] EXPIRE command executed (86400 seconds)")
         end)
         
         if not ok then
-            print(string.format("[WARN][Redis] Redis SET failed: %s", tostring(err)))
             log(log_level.WARN, "[FunctionalComponent] ⚠️ Redis SET failed: %s", tostring(err))
         else
-            print("[DEBUG][Redis] Redis persistence successful")
         end
     else
-        print("[DEBUG][Redis] Skipping Redis persistence - missing:")
-        print(string.format("  - server: %s", tostring(self.server ~= nil)))
-        print(string.format("  - dawn_sockets_handler: %s", 
-              tostring(self.server and self.server.dawn_sockets_handler ~= nil)))
-        print(string.format("  - state_management: %s", 
-              tostring(self.server and self.server.dawn_sockets_handler and 
-                      self.server.dawn_sockets_handler.state_management ~= nil)))
-        print(string.format("  - redis: %s", 
-              tostring(self.server and self.server.dawn_sockets_handler and 
-                      self.server.dawn_sockets_handler.state_management and 
-                      self.server.dawn_sockets_handler.state_management.redis ~= nil)))
-        print(string.format("  - component_key: %s", tostring(self.component_key)))
+
     end
     
     -- Send patches
     if #patches > 0 then
-        print(string.format("[DEBUG][Patch] Sending %d patches", #patches))
         
         -- Push patches individually or as array based on server configuration
         for i, patch in ipairs(patches) do
-            print(string.format("[DEBUG][Patch] Processing patch %d/%d", i, #patches))
             
             local patchQueue = nil
             if self.parent and self.parent.server and self.parent.server.patch_queue then
                 patchQueue = self.parent.server.patch_queue
-                print("[DEBUG][Patch] Using parent server patch_queue")
             elseif self.server and self.server.patch_queue then
                 patchQueue = self.server.patch_queue
-                print("[DEBUG][Patch] Using self server patch_queue")
             end
             
             if patchQueue then
-                print(string.format("[DEBUG][Patch] Pushing patch to queue (type: %s)", 
-                      type(patchQueue.push)))
                 patchQueue:push(patch)
-                print("[DEBUG][Patch] Patch pushed successfully")
             else
-                print("[DEBUG][Patch] No patch queue available")
-                print(string.format("  - has parent: %s", tostring(self.parent ~= nil)))
-                print(string.format("  - parent has server: %s", 
-                      tostring(self.parent and self.parent.server ~= nil)))
-                print(string.format("  - parent has patch_queue: %s", 
-                      tostring(self.parent and self.parent.server and 
-                              self.parent.server.patch_queue ~= nil)))
-                print(string.format("  - self has server: %s", 
-                      tostring(self.server ~= nil)))
-                print(string.format("  - self has patch_queue: %s", 
-                      tostring(self.server and self.server.patch_queue ~= nil)))
+               
             end
         end
     else
-        print("[DEBUG][Patch] No patches to send")
     end
     
-    print(string.format("[DEBUG][setState] === EXITING setState (returning %d patches) ===", #patches))
     return patches
 end
 -- Helper function to check if table contains element
@@ -1812,7 +1700,6 @@ function new_component:init(callback)
 
         -- Check if we have CRUD-enhanced component creation
         if self.HTMLReactive.createCRUDEnhancedComponent then
-            print("[DEBUG] Creating CRUD-enhanced component")
             self.reactive_component = self.HTMLReactive.createCRUDEnhancedComponent(
                 function(state, props, clientState)
                     local renderContext = {
@@ -1830,7 +1717,6 @@ function new_component:init(callback)
                 self:getClientState(self._ws_id)
             )
         elseif self.HTMLReactive.createComponentWithClientState then
-            print("[DEBUG] Creating component with client state")
             self.reactive_component = self.HTMLReactive.createComponentWithClientState({
                 render = function(state, props, clientState)
                     local renderContext = {
@@ -1851,7 +1737,6 @@ function new_component:init(callback)
                 end
             })
         else
-            print("[DEBUG] Creating basic component")
             self.reactive_component = self.HTMLReactive.createComponent(function(state, props, children, HTMLReactive)
                 local renderContext = {
                     state = state,

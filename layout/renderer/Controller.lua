@@ -64,7 +64,6 @@ function Controller:extends()
     function new_controller:dispatch(action, ...)
         local action_args = ...
 
-        print("Dispatching action: " .. action)
 
         local ok, err = pcall(function()
             if self.beforeAction then self:beforeAction(action, action_args) end

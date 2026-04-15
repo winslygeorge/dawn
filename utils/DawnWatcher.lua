@@ -10,7 +10,6 @@ function DevWatcher:new(server, options)
     self.server = server
     self.logger = self.server.logger or {
         log = function(_, level, message)
-            print("[" .. tostring(level) .. "] " .. (message or ""))
         end
     }
     self.file_cache = {}
@@ -160,7 +159,6 @@ function DevWatcher:start()
     end
     self.logger:log(log_level.INFO, "Starting dev watcher (interval: "..self.options.interval.."s)", "DevWatcher")
     self.timer = self.server:setInterval(function()
-        -- print("Scanning for file changes...")
         self:scan_files()
     end, self.options.interval * 1000)
 end

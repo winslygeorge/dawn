@@ -46,7 +46,6 @@ local function log(self, level, fmt, ...)
   local prefix = _fmt("[multipart:%s] ", level or "debug")
   local msg = _fmt(fmt or "", ...)
   local line = prefix .. msg .. "\n"
-  if is_tty_stderr() then io.stderr:write(line) else print(line) end
 end
 
 local function hexdump_prefix(s, n)

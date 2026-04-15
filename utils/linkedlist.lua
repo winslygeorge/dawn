@@ -173,7 +173,6 @@ end
 function LinkedList:printList()
   local current = self.head
   if current == nil then
-    print("Empty list")
     return
   end
 
@@ -186,7 +185,6 @@ function LinkedList:printList()
     count = count + 1
   until current == nil or (self.circled and current == self.head)
 
-  print(str)
 end
 
 return LinkedList

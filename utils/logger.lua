@@ -66,11 +66,9 @@ end
 function Logger:openLogFile()
     local file, err = io.open(LOG_FILE, "a+")
     if not file then
-        print("[Logger] Failed to open log file:", err)
         return
     end
     self.log_fd = file
-    print("[Logger] Log file opened.")
 end
 
 function Logger:checkRotation()
@@ -82,7 +80,6 @@ function Logger:checkRotation()
         local new_name = string.format("app_%s.log", timestamp)
         self.log_fd:close()
         os.rename(LOG_FILE, new_name)
-        print("[Logger] Rotated log file to:", new_name)
         self:cleanupOldLogs()
         self:openLogFile()
     end
@@ -97,7 +94,6 @@ function Logger:cleanupOldLogs()
     while #logs > MAX_ROTATED_FILES do
         local old = table.remove(logs, 1)
         os.remove(old)
-        print("[Logger] Removed old log file:", old)
     end
 end
 
@@ -107,7 +103,6 @@ function Logger:log(level, msg, source, request_id)
         level = LogLevel[level:upper()] or LogLevel.INFO
     end
     if not level or type(level) ~= "number" or level < LogLevel.DEBUG or level > LogLevel.FATAL then
-        print("[Logger] Invalid log level:", level)
         return
     end
     if level < min_level then return end
@@ -127,7 +122,6 @@ function Logger:log(level, msg, source, request_id)
 
     local json_log = cjson.encode(entry)
     if not json_log then
-        print("[Logger] Failed to encode log entry.")
         return
     end
     table.insert(self.log_queue, json_log .. "\n")
@@ -158,7 +152,6 @@ if self.log_mode == "dev" then
         reset, color, icon, " " .. msg_str, reset
     )
 
-    print(formatted)
 end
 
 
@@ -185,7 +178,6 @@ function Logger:flushBuffer()
         end
     end)
     if not ok then
-        print("[Logger] Log write failed:", err)
     end
 end
 
@@ -241,7 +233,6 @@ function Logger:shutdown()
     if self.log_fd then
         self.log_fd:close()
         self.log_fd = nil
-        print("[Logger] Shutdown complete. Logs flushed.")
     end
 end
 
