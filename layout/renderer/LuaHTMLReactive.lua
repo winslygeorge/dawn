@@ -4688,7 +4688,7 @@ end
 --- @field config.component_css string[]? A list of CSS strings from components to be inlined.
 --- @field config.component_js_scripts string[]? A list of raw JavaScript strings from components to be inlined.
 --- @field config.include_patch_client boolean? If false, omits the default patchClient.js script. Defaults to true.
---- @field config.title string? The page title. Defaults to "Dawn Untitled".
+--- @field config.title string? The page title. Defaults to "Qoleng Untitled".
 --- @field config.body_attrs table? Attributes for the <body> tag.
 --- @field config.head_extra VDOMNode|VDOMNode[]? Additional custom content for the <head> section.
 --- @field config.children VDOMNode|VDOMNode[]? The root VDOM node(s) of the application, to be placed in the body.
@@ -4803,7 +4803,7 @@ function HTML.App(config)
     end
 
     return HTML.Page({
-        title = config.title or "Dawn Untitled",
+        title = config.title or "Qoleng Untitled",
         body_attrs = config.body_attrs,
         head_extra = HTML.fragment(head_elements),
         children = HTML.fragment(final_body_children)

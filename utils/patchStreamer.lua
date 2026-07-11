@@ -8,9 +8,9 @@ local log_level = require("utils.logger").LogLevel
 local PatchStreamer = {}
 PatchStreamer.__index = PatchStreamer
 
-function PatchStreamer:new(dawn)
+function PatchStreamer:new(qoleng)
   local obj = setmetatable({}, self)
-  obj.dawn = dawn
+  obj.qoleng = qoleng
   obj.subscribers = {} -- sse_id → { filters = ..., last_seen = ... }
   obj.flush_interval = 100 -- ms
   obj.max_inactive_ms = 30000
@@ -23,7 +23,7 @@ function PatchStreamer:new(dawn)
 end
 
 function PatchStreamer:init()
-  self.timer_id = self.dawn:setInterval(function(ctx)
+  self.timer_id = self.qoleng:setInterval(function(ctx)
     if self.shutdown_signal then return end
     self:pruneDeadClients()
     if PatchQueue:isEmpty() then return end
@@ -34,14 +34,14 @@ function PatchStreamer:init()
     end
   end, self.flush_interval)
 
-  self.keepalive_timer_id = self.dawn:setInterval( function()
+  self.keepalive_timer_id = self.qoleng:setInterval( function()
     if self.shutdown_signal then return end
     for sse_id in pairs(self.subscribers) do
       local ok, err = pcall(function()
-        self.dawn:sse_send(sse_id, ":ping\n\n")
+        self.qoleng:sse_send(sse_id, ":ping\n\n")
       end)
       if not ok then
-        self.dawn.logger:log(log_level.ERROR, "[PatchStreamer] Keepalive failed for:"..sse_id.."\nError:"..err, "PatchStreamer", sse_id)
+        self.qoleng.logger:log(log_level.ERROR, "[PatchStreamer] Keepalive failed for:"..sse_id.."\nError:"..err, "PatchStreamer", sse_id)
         self:removeSubscriber(sse_id)
       end
     end
@@ -53,12 +53,12 @@ function PatchStreamer:addSubscriber(sse_id, filters)
     filters = filters or {},
     last_seen = os.time() * 1000
   }
-  self.dawn.logger:log(log_level.INFO, "[PatchStreamer] Added subscriber:"..sse_id, "PatchStreamer", sse_id)
+  self.qoleng.logger:log(log_level.INFO, "[PatchStreamer] Added subscriber:"..sse_id, "PatchStreamer", sse_id)
 end
 
 function PatchStreamer:removeSubscriber(sse_id)
   self.subscribers[sse_id] = nil
-  self.dawn.logger:log(log_level.INFO, "[PatchStreamer] Removed subscriber:"..sse_id, "PatchStreamer", sse_id)
+  self.qoleng.logger:log(log_level.INFO, "[PatchStreamer] Removed subscriber:"..sse_id, "PatchStreamer", sse_id)
 end
 
 function PatchStreamer:shouldSend(patch, filters)
@@ -116,10 +116,10 @@ function PatchStreamer:broadcast(payload, raw_patch)
     meta.last_seen = os.time() * 1000
     if self:shouldSend(raw_patch, meta.filters) then
       local ok, err = pcall(function()
-        self.dawn:sse_send(sse_id, "data: " .. payload .. "\n\n")
+        self.qoleng:sse_send(sse_id, "data: " .. payload .. "\n\n")
       end)
       if not ok then
-        self.dawn.logger:log(log_level.ERROR, "[PatchStreamer] Failed to send to:"..sse_id.."\nError:"..err, "PatchStreamer", sse_id)
+        self.qoleng.logger:log(log_level.ERROR, "[PatchStreamer] Failed to send to:"..sse_id.."\nError:"..err, "PatchStreamer", sse_id)
         self:removeSubscriber(sse_id)
       end
     end
@@ -131,7 +131,7 @@ function PatchStreamer:shutdown()
   self.subscribers = {}
   if self.timer_id then self.timer_id = nil end
   if self.keepalive_timer_id then self.keepalive_timer_id = nil end
-  self.dawn.logger:log(log_level.INFO, "[PatchStreamer] Shutdown complete.")
+  self.qoleng.logger:log(log_level.INFO, "[PatchStreamer] Shutdown complete.")
 end
 
 return PatchStreamer

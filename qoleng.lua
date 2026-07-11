@@ -4,8 +4,8 @@ return {
   scheduler = require("runtime.scheduler"),
 
   -- Server core
-  dawn_server = require("dawn_server"),
-  dawn_sockets = require("dawn_sockets"),
+  qoleng_server = require("qoleng_server"),
+  qoleng_sockets = require("qoleng_sockets"),
   multipart_parser = require("multipart_parser"),
 
   -- WebSockets

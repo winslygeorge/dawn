@@ -29,7 +29,7 @@ local ICONS = {
 local Logger = {}
 Logger.__index = Logger
 
-function Logger:new(dawn)
+function Logger:new(qoleng)
     local obj = setmetatable({}, self)
     obj.pid = ffi.C.getpid()
     obj.thread_id = math.random(1, 999999999)
@@ -43,7 +43,7 @@ function Logger:new(dawn)
     obj.subscribers = {}
     obj.history = {}
     obj.last_request_id = nil
-    obj.dawn = dawn
+    obj.qoleng = qoleng
     obj.flush_timer_id = nil
 
     obj:openLogFile()
@@ -183,9 +183,9 @@ end
 
 function Logger:startAutoFlush()
     if self.flush_timer_id then
-        self.dawn:clearTimer(self.flush_timer_id)
+        self.qoleng:clearTimer(self.flush_timer_id)
     end
-    self.flush_timer_id = self.dawn:setInterval(function(ctx)
+    self.flush_timer_id = self.qoleng:setInterval(function(ctx)
         self:flushBuffer()
     end, AUTO_FLUSH_INTERVAL)
 end
@@ -194,7 +194,7 @@ function Logger:addSubscriber(id, opts)
     self.subscribers[id] = opts or {}
     for _, line in ipairs(self.history) do
         if self:shouldSend(line, self.subscribers[id]) then
-            self.dawn:sse_send(id, line)
+            self.qoleng:sse_send(id, line)
         end
     end
 end
@@ -219,7 +219,7 @@ end
 function Logger:broadcastToSubscribers(line)
     for id, opts in pairs(self.subscribers) do
         if self:shouldSend(line, opts) then
-            self.dawn:sse_send(id, line)
+            self.qoleng:sse_send(id, line)
         end
     end
 end

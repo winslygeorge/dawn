@@ -1,4 +1,4 @@
--- dawn_sockets.lua (Enhanced with Phoenix-style Presence + Lifecycle + Timeout + Modular Events + Ack + Binary + Dynamic Rooms + Message Queuing)
+-- qoleng_sockets.lua (Enhanced with Phoenix-style Presence + Lifecycle + Timeout + Modular Events + Ack + Binary + Dynamic Rooms + Message Queuing)
 local uv = require("luv")
 local cjson = require("dkjson")
 local uuid = require('utils.uuid')
@@ -7,8 +7,8 @@ local log_level = require('utils.logger').LogLevel
 local WS_OPCODE_PONG = 0xA
 local WS_OPCODE_BINARY = 2 -- Custom opcode for binary messages
 
-local DawnSockets = {}
-DawnSockets.__index = DawnSockets
+local QolengSockets = {}
+QolengSockets.__index = QolengSockets
 
 -- Helper function to safely get WebSocket ID
 local function get_ws_id(ws)
@@ -20,11 +20,11 @@ local function get_ws_id(ws)
     end
 end
 
-function DawnSockets:new(dawn_server,parent_supervisor, shared_state, options)
-    local self = setmetatable({}, DawnSockets)
-    self.server = dawn_server
+function QolengSockets:new(qoleng_server,parent_supervisor, shared_state, options)
+    local self = setmetatable({}, QolengSockets)
+    self.server = qoleng_server
     if not self.server then
-        error("DawnSockets requires a Dawn server instance.")
+        error("QolengSockets requires a Qoleng server instance.")
     end
     self.supervisor = parent_supervisor
     self.shared = shared_state or {
@@ -36,7 +36,7 @@ function DawnSockets:new(dawn_server,parent_supervisor, shared_state, options)
     }
     self.logger = self.supervisor.logger
 
-    self.logger:setComponentLevel("DawnSockets", log_level.INFO)
+    self.logger:setComponentLevel("QolengSockets", log_level.INFO)
     self.handlers = options.handlers or {}
     self.connections = {}
 
@@ -59,16 +59,16 @@ function DawnSockets:new(dawn_server,parent_supervisor, shared_state, options)
         self.state_management:unsubscribe(topic)
     end
 
-    self.logger:setComponentLevel("DawnSockets", log_level.INFO)
+    self.logger:setComponentLevel("QolengSockets", log_level.INFO)
 
     return self
 end
 
-function DawnSockets:safe_get_ws_id(ws)
+function QolengSockets:safe_get_ws_id(ws)
     return get_ws_id(ws)
 end
 
-function DawnSockets:syncPrivateChat(user_id, ws)
+function QolengSockets:syncPrivateChat(user_id, ws)
     local ws_id = get_ws_id(ws)
     if not ws_id then
         error("Error: Unable to get WebSocket ID.")
@@ -88,26 +88,26 @@ function DawnSockets:syncPrivateChat(user_id, ws)
     self.state_management:mark_socket_active(ws_id, user_id)
 end
 
-function DawnSockets:reloadPersistedRoomMembers()
+function QolengSockets:reloadPersistedRoomMembers()
     self.state_management:reloadPersistedRoomMembers()
 end
 
-function DawnSockets:syncPrivateChatLeave(user_id)
+function QolengSockets:syncPrivateChatLeave(user_id)
     -- No need to clear user_socket binding here.  State management handles this.
 end
 
-function DawnSockets:getSyncPrivateChatId(user_id)
+function QolengSockets:getSyncPrivateChatId(user_id)
     return self.state_management:get_user_binded_socket_id(user_id) or nil
 end
 
-function DawnSockets:getSyncPrivateUserID(ws_id)
+function QolengSockets:getSyncPrivateUserID(ws_id)
     if not ws_id then
         return nil
     end
     return self.state_management:get_ws_id_binded_user_id(ws_id) or nil
 end
 
-function DawnSockets:getAllsyncPrivateChat()
+function QolengSockets:getAllsyncPrivateChat()
     return self.state_management:get_connected_users() or {}
 end
 
@@ -119,7 +119,7 @@ local function shallow_copy(orig)
     return copy
 end
 
-function DawnSockets:setReactiveRenderEngine(reactive_render_engine)
+function QolengSockets:setReactiveRenderEngine(reactive_render_engine)
     self.reactive_render_engine = reactive_render_engine
     if self.state_management and self.state_management.redis then
            -- Notify the 'join' event handler
@@ -133,7 +133,7 @@ end
 end
 
 
-function DawnSockets:patchUnsuscribe(ws, ws_id)
+function QolengSockets:patchUnsuscribe(ws, ws_id)
     if self.state_management and self.state_management.redis then
            -- Notify the 'join' event handler
     local handler =
@@ -146,7 +146,7 @@ function DawnSockets:patchUnsuscribe(ws, ws_id)
 end
 end
 
-function DawnSockets:start_heartbeat(interval, timeout)
+function QolengSockets:start_heartbeat(interval, timeout)
 
     self.logger:log(log_level.DEBUG, "[HEARTBEAT] Starting heartbeat with interval:" .. interval .."and timeout:" .. timeout)
 
@@ -167,7 +167,7 @@ function DawnSockets:start_heartbeat(interval, timeout)
 self:send_heartbeats()
     self.heartbeat_timer_id = self.server:setInterval(function(ctx)
         if not self.connections or next(self.connections) == nil then
-            self.logger:log(log_level.DEBUG, "[HEARTBEAT] No active connections to send heartbeats.", "DawnSockets")
+            self.logger:log(log_level.DEBUG, "[HEARTBEAT] No active connections to send heartbeats.", "QolengSockets")
             return
         end
         self:send_heartbeats()
@@ -175,22 +175,22 @@ self:send_heartbeats()
         self:auto_leave_idle_clients(300) -- 5 min idle leave
     end, interval)
 
-    self.logger:log(log_level.DEBUG, string.format("[HEARTBEAT] Started: every %dms, timeout: %ds", interval, timeout), "DawnSockets")
+    self.logger:log(log_level.DEBUG, string.format("[HEARTBEAT] Started: every %dms, timeout: %ds", interval, timeout), "QolengSockets")
 end
 
 -- create function to stop heartbeat
-function DawnSockets:stop_heartbeat()
+function QolengSockets:stop_heartbeat()
     local timerID = self.heartbeat_timer_id
     if timerID then
         -- self.server.clearTimer(2)
         self.heartbeat_timer_id = nil
-        self.logger:log(log_level.INFO, "[HEARTBEAT] Stopped heartbeat", "DawnSockets")
+        self.logger:log(log_level.INFO, "[HEARTBEAT] Stopped heartbeat", "QolengSockets")
     end
 end
 
-function DawnSockets:send_heartbeats()
+function QolengSockets:send_heartbeats()
     -- log debug message
-    self.logger:log(log_level.DEBUG, "[HEARTBEAT] Sending heartbeats to all connected clients", "DawnSockets")
+    self.logger:log(log_level.DEBUG, "[HEARTBEAT] Sending heartbeats to all connected clients", "QolengSockets")
     for ws_id, conn in pairs(self.connections) do
         if conn and conn.ws then
             conn.ws:send('{"type":"ping"}')
@@ -198,13 +198,13 @@ function DawnSockets:send_heartbeats()
     end
 end
 
-function DawnSockets:cleanup_stale_clients(timeout_seconds)
+function QolengSockets:cleanup_stale_clients(timeout_seconds)
     local now = os.time()
     local stale_ws_ids = {}
     for ws_id, conn in pairs(self.connections) do
         local last = conn.state.last_pong or conn.state.last_message or 0
         if now - last > timeout_seconds then
-            self.logger:log(log_level.DEBUG, "[HEARTBEAT] Stale connection closing:", tostring(conn.ws), "(ID:", ws_id, ")", "DawnSockets")
+            self.logger:log(log_level.DEBUG, "[HEARTBEAT] Stale connection closing:", tostring(conn.ws), "(ID:", ws_id, ")", "QolengSockets")
             table.insert(stale_ws_ids, ws_id)
             if conn.ws then
                 self:patchUnsuscribe(conn.ws, ws_id)
@@ -217,7 +217,7 @@ function DawnSockets:cleanup_stale_clients(timeout_seconds)
     end
 end
 
-function DawnSockets:auto_leave_idle_clients(room_timeout_seconds)
+function QolengSockets:auto_leave_idle_clients(room_timeout_seconds)
     local now = os.time()
     for ws_id, conn in pairs(self.connections) do
         for _, topic in ipairs(conn.state.rooms or {}) do
@@ -226,14 +226,14 @@ function DawnSockets:auto_leave_idle_clients(room_timeout_seconds)
                 local presence_data = self.state_management:get_all_presence(topic)[ws_id]
                 if presence_data and presence_data.joined_at and now - presence_data.joined_at > room_timeout_seconds then
                     self:leave_room(topic, conn.ws)
-                    self.logger:log(log_level.DEBUG, "[AUTO-LEAVE] Removing idle " .. ws_id .. " from " .. topic, "DawnSockets")
+                    self.logger:log(log_level.DEBUG, "[AUTO-LEAVE] Removing idle " .. ws_id .. " from " .. topic, "QolengSockets")
                 end
             end
         end
     end
 end
 
-function DawnSockets:broadcast_to_room(topic, message_table)
+function QolengSockets:broadcast_to_room(topic, message_table)
     local room = self.state_management:get_all_presence(topic) or {}
     if not room then return end
 
@@ -253,7 +253,7 @@ end
 
 -- add a broadcast to all without checking rooms
 
-function DawnSockets:broadcast_to_all(message_table)
+function QolengSockets:broadcast_to_all(message_table)
     for ws_id, conn in pairs(self.connections) do
         if conn and conn.ws then
             self:send_to_user(ws_id, message_table)
@@ -261,7 +261,7 @@ function DawnSockets:broadcast_to_all(message_table)
     end
 end
 
-function DawnSockets:broadcast_presence_diff(topic, diff)
+function QolengSockets:broadcast_presence_diff(topic, diff)
     local message = {
         type = "presence_diff",
         topic = topic,
@@ -271,7 +271,7 @@ function DawnSockets:broadcast_presence_diff(topic, diff)
     self:broadcast_to_room(topic, message)
 end
 
-function DawnSockets:join_room(topic, ws, payload)
+function QolengSockets:join_room(topic, ws, payload)
     local ws_id = get_ws_id(ws)
     if not ws_id then
         error("Error: Unable to get WebSocket ID.")
@@ -279,11 +279,11 @@ function DawnSockets:join_room(topic, ws, payload)
     end
 
     if self.state_management:room_exists(topic) == false then
-        self.logger:log(log_level.WARN, string.format("[ROOM] Room %s does not exist when %s tried to join.", topic, ws_id), "DawnSockets")
+        self.logger:log(log_level.WARN, string.format("[ROOM] Room %s does not exist when %s tried to join.", topic, ws_id), "QolengSockets")
         -- Room does not exist, create it
         local success, err = self.state_management:create_room(topic)
         if not success then
-            self.logger:log(log_level.WARN, string.format("[ROOM] Error creating room %s: %s", topic, err), "DawnSockets")
+            self.logger:log(log_level.WARN, string.format("[ROOM] Error creating room %s: %s", topic, err), "QolengSockets")
             return
         end
         if self.connections[ws_id] then
@@ -292,9 +292,9 @@ function DawnSockets:join_room(topic, ws, payload)
                 table.insert(self.connections[ws_id].state.rooms, topic)
             end
         end
-        self.logger:log(log_level.DEBUG, string.format("[ROOM] Room %s created successfully.", topic), "DawnSockets")
+        self.logger:log(log_level.DEBUG, string.format("[ROOM] Room %s created successfully.", topic), "QolengSockets")
         self:send_to_user(ws_id, {
-            type = "dawn_error",
+            type = "qoleng_error",
             topic = topic,
             event = "join_error",
             payload = { reason = "room_not_found but its been created instead - "..topic },
@@ -345,7 +345,7 @@ function DawnSockets:join_room(topic, ws, payload)
     end
 end
 
-function DawnSockets:leave_room(topic, ws)
+function QolengSockets:leave_room(topic, ws)
     local ws_id = get_ws_id(ws)
     if not ws_id then
         error("Error: Unable to get WebSocket ID.")
@@ -380,7 +380,7 @@ function DawnSockets:leave_room(topic, ws)
     end
 end
 
-function DawnSockets:safe_close(ws_id)
+function QolengSockets:safe_close(ws_id)
     local conn = self.connections[ws_id]
     if conn and not conn.state.closed then
         conn.state.closed = true
@@ -401,9 +401,9 @@ function DawnSockets:safe_close(ws_id)
         if conn.ws and conn.ws.close then
             self.shared.metrics.total_connections = (self.shared.metrics.total_connections or 0) - 1
             conn.ws:close()
-        self.logger:log(log_level.DEBUG, "[WS] Closing connection:" ..  ws_id .. "ws:" .. tostring(conn.ws), "DawnSockets")
+        self.logger:log(log_level.DEBUG, "[WS] Closing connection:" ..  ws_id .. "ws:" .. tostring(conn.ws), "QolengSockets")
         else
-            self.logger:log(log_level.WARN, "[WS] Unable to close connection:" .. ws_id .. "ws:" .. tostring(conn.ws), "DawnSockets")
+            self.logger:log(log_level.WARN, "[WS] Unable to close connection:" .. ws_id .. "ws:" .. tostring(conn.ws), "QolengSockets")
         end
 
         self.connections[ws_id] = nil
@@ -417,10 +417,10 @@ function DawnSockets:safe_close(ws_id)
 end
 
 -- This function is used to handle the opening of a WebSocket connection.
-function DawnSockets:handle_open(ws)
+function QolengSockets:handle_open(ws)
     local ws_id = get_ws_id(ws)
     if not ws_id then
-        self.logger:log(log_level.DEBUG, "Error: Unable to get WebSocket ID : -" .. ws_id, "DawnSockets")
+        self.logger:log(log_level.DEBUG, "Error: Unable to get WebSocket ID : -" .. ws_id, "QolengSockets")
         return
     end
 
@@ -431,14 +431,14 @@ function DawnSockets:handle_open(ws)
     end
 
     if not ws or not ws.send then
-        self.logger:log(log_level.DEBUG, "[WS] Invalid WebSocket object:" .. tostring(ws), "DawnSockets")
+        self.logger:log(log_level.DEBUG, "[WS] Invalid WebSocket object:" .. tostring(ws), "QolengSockets")
         return
     end
 
     self:setupWsChildProcess(ws_id, ws)
 end
 
-function DawnSockets:setupWsChildProcess(ws_id, ws)
+function QolengSockets:setupWsChildProcess(ws_id, ws)
     local child = {
         name = ws_id,
         restart_policy = "transient",
@@ -461,23 +461,23 @@ function DawnSockets:setupWsChildProcess(ws_id, ws)
             return true
         end,
         stop = function()
-            self.logger:log(log_level.DEBUG, "[WS STOP]" ..ws_id .. "ws:" .. tostring(ws), "DawnSockets")
+            self.logger:log(log_level.DEBUG, "[WS STOP]" ..ws_id .. "ws:" .. tostring(ws), "QolengSockets")
             if (ws and ws.close) then
                 self:safe_close(ws_id)
-                self.logger:log(log_level.DEBUG, "[User socket closed] " .. "ws:" .. tostring(ws), "DawnSockets")
+                self.logger:log(log_level.DEBUG, "[User socket closed] " .. "ws:" .. tostring(ws), "QolengSockets")
             end
             self.connections[ws_id] = nil
             return true
         end,
         restart = function()
-            self.logger:log(log_level.DEBUG, "[WS RESTART]" .. ws_id .. "ws:" .. tostring(ws), "DawnSockets")
+            self.logger:log(log_level.DEBUG, "[WS RESTART]" .. ws_id .. "ws:" .. tostring(ws), "QolengSockets")
             return true
         end,
     }
     self.supervisor:startChild(child)
 end
 
-function DawnSockets:handle_message(ws, message, opcode)
+function QolengSockets:handle_message(ws, message, opcode)
     local ws_id = get_ws_id(ws)
     if not ws_id then
         error("Error: Unable to get WebSocket ID.")
@@ -503,10 +503,10 @@ function DawnSockets:handle_message(ws, message, opcode)
             if handler_group and type(handler_group["message"]) == "function" then
                 local success, err = pcall(handler_group["message"], self, ws, message, conn.state, self.shared)
                 if not success then
-                    self.logger:log(log_level.DEBUG, "[BINARY ERROR]" .. err, "DawnSockets")
+                    self.logger:log(log_level.DEBUG, "[BINARY ERROR]" .. err, "QolengSockets")
                 end
             else
-                self.logger:log(log_level.DEBUG, "[BINARY] No handler for binary message", "DawnSockets")
+                self.logger:log(log_level.DEBUG, "[BINARY] No handler for binary message", "QolengSockets")
             end
             return
         else -- Assume text message (JSON)
@@ -579,16 +579,16 @@ function DawnSockets:handle_message(ws, message, opcode)
                     pcall(handler_group[event], self, ws, payload, conn.state, self.shared, topic, self.state_management)
                 if not success then
                     ws:send(cjson.encode({
-                        type = "dawn_error",
+                        type = "qoleng_error",
                         topic = topic,
                         event = event,
                         payload = { reason = err },
                     }))
-                    self.logger:log(log_level.DEBUG, "[WS ERROR]" .. err, "DawnSockets")
+                    self.logger:log(log_level.DEBUG, "[WS ERROR]" .. err, "QolengSockets")
                 end
             else
                 ws:send(cjson.encode({
-                    type = "dawn_reply",
+                    type = "qoleng_reply",
                     topic = topic,
                     event = event,
                     payload = { status = "error", reason = "unhandled_event" },
@@ -619,7 +619,7 @@ local function safeEncode(value)
     return require("dkjson").encode(sanitize(value, {}))
 end
 
-function DawnSockets:send_to_user(ws_unique_identifier, message_table, ack_callback)
+function QolengSockets:send_to_user(ws_unique_identifier, message_table, ack_callback)
     local encoded = safeEncode(message_table)
     local ws = self.connections[ws_unique_identifier] and self.connections[ws_unique_identifier].ws
     local receiver = message_table and message_table.receiver or nil
@@ -635,7 +635,7 @@ function DawnSockets:send_to_user(ws_unique_identifier, message_table, ack_callb
             local sender_ws = self.connections[sender_ws_id] and self.connections[sender_ws_id].ws
             if sender_ws and sender_ws.send then
                 sender_ws:send(cjson.encode({
-                    type = "dawn_reply",
+                    type = "qoleng_reply",
                     topic = "system",
                     event = "away",
                     payload = { status = "error", reason = sender .. " is user_away" },
@@ -670,28 +670,28 @@ else
 
         if (receiver) then
             self.state_management:queue_private_message(receiver, message_table)
-            self.logger:log(log_level.DEBUG, string.format("[WS]No Receiver User %s is offline. Message (ID: %s) queued.", receiver, message_id), "DawnSockets")
+            self.logger:log(log_level.DEBUG, string.format("[WS]No Receiver User %s is offline. Message (ID: %s) queued.", receiver, message_id), "QolengSockets")
             return false
         else
-           self.logger:log(log_level.DEBUG, "[WS] Invalid WebSocket object:" ..tostring(ws).. "Message (ID: %s) not sent." .. message_id, "DawnSockets")
+           self.logger:log(log_level.DEBUG, "[WS] Invalid WebSocket object:" ..tostring(ws).. "Message (ID: %s) not sent." .. message_id, "QolengSockets")
            self:safe_close(ws_unique_identifier)
         end
         return false
     end
 end
 
-function DawnSockets:send_binary_to_user(ws_unique_identifier, binary_data)
+function QolengSockets:send_binary_to_user(ws_unique_identifier, binary_data)
     local ws = self.connections[ws_unique_identifier] and self.connections[ws_unique_identifier].ws
     if ws and ws.send then
         ws:send(binary_data, "binary")
         return true
     else
-        self.server:log(log_level.DEBUG, "[WS] Invalid WebSocket object:" ..tostring(ws).. "Binary message not sent.", "DawnSockets")
+        self.server:log(log_level.DEBUG, "[WS] Invalid WebSocket object:" ..tostring(ws).. "Binary message not sent.", "QolengSockets")
         return false
     end
 end
 
-function DawnSockets:push_notification(ws, payload)
+function QolengSockets:push_notification(ws, payload)
     local ws_id = get_ws_id(ws)
     if not ws_id then return false end
     local receiver = payload.receiver or self:getSyncPrivateUserID(ws_id)
@@ -705,7 +705,7 @@ function DawnSockets:push_notification(ws, payload)
     })
 end
 
-function DawnSockets:handle_close(ws, code, reason)
+function QolengSockets:handle_close(ws, code, reason)
     local ws_id = get_ws_id(ws)
     self:patchUnsuscribe(ws, ws_id)
     
@@ -718,25 +718,25 @@ function DawnSockets:handle_close(ws, code, reason)
           self.shared.pending_acknowledgements[ws_id] = nil
         end
         self.supervisor:stopChild({ name = ws_id })
-        self.logger:log(log_level.DEBUG, "[User socket closed]  ws: ".. tostring(ws).. " code:" .. code, "DawnSockets")
+        self.logger:log(log_level.DEBUG, "[User socket closed]  ws: ".. tostring(ws).. " code:" .. code, "QolengSockets")
     end
 end
 
 -- Helper function
-function DawnSockets:room_exists(room_id)
+function QolengSockets:room_exists(room_id)
     return self.state_management:room_exists(room_id)
 end
 
 -- Helper function
-function DawnSockets:create_room(room_id, options)
+function QolengSockets:create_room(room_id, options)
     local success, err = self.state_management:create_room(room_id, options)
     if success then
-        self.logger:log(log_level.DEBUG, string.format("[ROOM] Created room: %s", room_id), "DawnSockets")
+        self.logger:log(log_level.DEBUG, string.format("[ROOM] Created room: %s", room_id), "QolengSockets")
         return true
     else
-        self.logger:log(log_level.DEBUG, string.format("[ROOM] Error creating room %s: %s", room_id, err), "DawnSockets")
+        self.logger:log(log_level.DEBUG, string.format("[ROOM] Error creating room %s: %s", room_id, err), "QolengSockets")
         return false
     end
 end
 
-return DawnSockets
+return QolengSockets

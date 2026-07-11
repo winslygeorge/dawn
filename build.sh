@@ -3,14 +3,14 @@
 set -e
 
 # === CONFIGURATION ===
-PACKAGE="dawn"
-VERSION="1.2-6"
+PACKAGE="qoleng"
+VERSION="1.1-1"
 ROCKSPEC_NAME="$PACKAGE-$VERSION.rockspec"
 C_SRC="server/check_version.cpp"
 
 SRC_DIR=$(pwd)
 BUILD_DIR="$SRC_DIR/build"
-MODULE_ROOT="$BUILD_DIR/dawn"
+MODULE_ROOT="$BUILD_DIR/qoleng"
 ROCKSPEC_PATH="$ROCKSPEC_NAME"
 
 # === 0. Install Build Dependencies ===
@@ -51,14 +51,14 @@ done
 # version = "$VERSION"
 
 # source = {
-#    url = "https://github.com/winslygeorge/dawn/archive/refs/heads/master.zip",
-#    branch = "dawn-master"
+#    url = "https://github.com/winslygeorge/qoleng/archive/refs/heads/master.zip",
+#    branch = "qoleng-master"
 # }
 
 # description = {
-#    summary = "🌄 Dawn Framework Overview",
+#    summary = "🌄 Qoleng Framework Overview",
 #    detailed = [[
-#       Dawn is a modular, async-capable Lua web framework inspired by the architectural philosophy of Phoenix (Elixir) and Express (Node.js). It supports:
+#       Qoleng is a modular, async-capable Lua web framework inspired by the architectural philosophy of Phoenix (Elixir) and Express (Node.js). It supports:
 
 #       - RESTful HTTP routing
 #       - Middleware pipelines
@@ -89,7 +89,7 @@ done
 #   mod_path="${luac_file#$MODULE_ROOT/}"
 #   mod_name="${mod_path%.lua}"
 #   mod_name="${mod_name//\//.}"
-#   echo "      [\"$mod_name\"] = \"dawn/${mod_path}\"," >> "$ROCKSPEC_PATH"
+#   echo "      [\"$mod_name\"] = \"qoleng/${mod_path}\"," >> "$ROCKSPEC_PATH"
 # done
 
 # # Close the rockspec

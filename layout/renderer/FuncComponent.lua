@@ -377,7 +377,7 @@ end
     end
 
     function new_component:setServer(server)
-        assert(type(server) == "table", "server must be an object of dawn server table")
+        assert(type(server) == "table", "server must be an object of qoleng server table")
         self.server = server
         return self
     end
@@ -439,8 +439,8 @@ end
                     child:set_WS_ID(ws_id)
                     child:set_client_token(client_token)
                     -- Load persisted client state from Redis if available
-                    if root.server and root.server.dawn_sockets_handler and root.server.dawn_sockets_handler.state_management and root.server.dawn_sockets_handler.state_management.redis and child.component_key then
-                        local redis = root.server.dawn_sockets_handler.state_management.redis
+                    if root.server and root.server.qoleng_sockets_handler and root.server.qoleng_sockets_handler.state_management and root.server.qoleng_sockets_handler.state_management.redis and child.component_key then
+                        local redis = root.server.qoleng_sockets_handler.state_management.redis
                         local key = string.format("client_state:%s:%s", child.component_key, child.client_token or ws_id)
                         local ok, val = pcall(function() return redis:get(key) end)
                         if ok and val then
@@ -490,8 +490,8 @@ end
 
         local hadRedisState = false
         -- Load persisted client state if Redis available
-        if self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management and self.server.dawn_sockets_handler.state_management.redis and self.component_key then
-            local redis = self.server.dawn_sockets_handler.state_management.redis
+        if self.server and self.server.qoleng_sockets_handler and self.server.qoleng_sockets_handler.state_management and self.server.qoleng_sockets_handler.state_management.redis and self.component_key then
+            local redis = self.server.qoleng_sockets_handler.state_management.redis
             local key = string.format("client_state:%s:%s", self.component_key, self.client_token or ws_id)
             local ok, val = pcall(function() return redis:get(key) end)
             if ok and val then
@@ -628,19 +628,19 @@ function new_component:getRedisClientState(client_token_or_ws_id, comp_key)
 
     -- Check if all required components exist
     local has_server = self.server ~= nil
-    local has_dawn_sockets_handler = has_server and self.server.dawn_sockets_handler ~= nil
-    local has_state_management = has_dawn_sockets_handler and self.server.dawn_sockets_handler.state_management ~= nil
-    local has_redis = has_state_management and self.server.dawn_sockets_handler.state_management.redis ~= nil
+    local has_qoleng_sockets_handler = has_server and self.server.qoleng_sockets_handler ~= nil
+    local has_state_management = has_qoleng_sockets_handler and self.server.qoleng_sockets_handler.state_management ~= nil
+    local has_redis = has_state_management and self.server.qoleng_sockets_handler.state_management.redis ~= nil
     
     log(log_level.DEBUG, "[FunctionalComponent] 🔍 Precondition checks:")
     log(log_level.DEBUG, "[FunctionalComponent]   • self.server exists: %s", tostring(has_server))
-    log(log_level.DEBUG, "[FunctionalComponent]   • dawn_sockets_handler exists: %s", tostring(has_dawn_sockets_handler))
+    log(log_level.DEBUG, "[FunctionalComponent]   • qoleng_sockets_handler exists: %s", tostring(has_qoleng_sockets_handler))
     log(log_level.DEBUG, "[FunctionalComponent]   • state_management exists: %s", tostring(has_state_management))
     log(log_level.DEBUG, "[FunctionalComponent]   • redis exists: %s", tostring(has_redis))
     log(log_level.DEBUG, "[FunctionalComponent]   • self.component_key exists: %s", tostring(self.component_key ~= nil))
 
-    if has_server and has_dawn_sockets_handler and has_state_management and has_redis and self.component_key then
-        local redis = self.server.dawn_sockets_handler.state_management.redis
+    if has_server and has_qoleng_sockets_handler and has_state_management and has_redis and self.component_key then
+        local redis = self.server.qoleng_sockets_handler.state_management.redis
         
         -- Determine which component key to use
         local actual_comp_key = comp_key or self.component_key
@@ -677,7 +677,7 @@ function new_component:getRedisClientState(client_token_or_ws_id, comp_key)
     else
         log(log_level.WARN, "[FunctionalComponent] ⚠️ Missing required dependencies for getRedisClientState:")
         if not has_server then log(log_level.WARN, "[FunctionalComponent]   • self.server is nil") end
-        if not has_dawn_sockets_handler then log(log_level.WARN, "[FunctionalComponent]   • dawn_sockets_handler is nil") end
+        if not has_qoleng_sockets_handler then log(log_level.WARN, "[FunctionalComponent]   • qoleng_sockets_handler is nil") end
         if not has_state_management then log(log_level.WARN, "[FunctionalComponent]   • state_management is nil") end
         if not has_redis then log(log_level.WARN, "[FunctionalComponent]   • redis is nil") end
         if not self.component_key then log(log_level.WARN, "[FunctionalComponent]   • self.component_key is nil") end
@@ -710,18 +710,18 @@ function new_component:getRedisComponentState(comp_key)
 
     -- Check if all required components exist
     local has_server = self.server ~= nil
-    local has_dawn_sockets_handler = has_server and self.server.dawn_sockets_handler ~= nil
-    local has_state_management = has_dawn_sockets_handler and self.server.dawn_sockets_handler.state_management ~= nil
-    local has_redis = has_state_management and self.server.dawn_sockets_handler.state_management.redis ~= nil
+    local has_qoleng_sockets_handler = has_server and self.server.qoleng_sockets_handler ~= nil
+    local has_state_management = has_qoleng_sockets_handler and self.server.qoleng_sockets_handler.state_management ~= nil
+    local has_redis = has_state_management and self.server.qoleng_sockets_handler.state_management.redis ~= nil
     
     log(log_level.DEBUG, "[FunctionalComponent] 🔍 Precondition checks for component state:")
     log(log_level.DEBUG, "[FunctionalComponent]   • self.server exists: %s", tostring(has_server))
-    log(log_level.DEBUG, "[FunctionalComponent]   • dawn_sockets_handler exists: %s", tostring(has_dawn_sockets_handler))
+    log(log_level.DEBUG, "[FunctionalComponent]   • qoleng_sockets_handler exists: %s", tostring(has_qoleng_sockets_handler))
     log(log_level.DEBUG, "[FunctionalComponent]   • state_management exists: %s", tostring(has_state_management))
     log(log_level.DEBUG, "[FunctionalComponent]   • redis exists: %s", tostring(has_redis))
 
-    if has_server and has_dawn_sockets_handler and has_state_management and has_redis then
-        local redis = self.server.dawn_sockets_handler.state_management.redis
+    if has_server and has_qoleng_sockets_handler and has_state_management and has_redis then
+        local redis = self.server.qoleng_sockets_handler.state_management.redis
         
         -- Determine which component key to use
         local actual_comp_key = comp_key or self.component_key
@@ -765,7 +765,7 @@ function new_component:getRedisComponentState(comp_key)
     else
         log(log_level.WARN, "[FunctionalComponent] ⚠️ Missing required dependencies for getRedisComponentState:")
         if not has_server then log(log_level.WARN, "[FunctionalComponent]   • self.server is nil") end
-        if not has_dawn_sockets_handler then log(log_level.WARN, "[FunctionalComponent]   • dawn_sockets_handler is nil") end
+        if not has_qoleng_sockets_handler then log(log_level.WARN, "[FunctionalComponent]   • qoleng_sockets_handler is nil") end
         if not has_state_management then log(log_level.WARN, "[FunctionalComponent]   • state_management is nil") end
         if not has_redis then log(log_level.WARN, "[FunctionalComponent]   • redis is nil") end
     end
@@ -794,8 +794,8 @@ end
 function new_component:validateRedisConnection()
     log(log_level.DEBUG, "[FunctionalComponent] 🔍 Validating Redis connection...")
     
-    if self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management then
-        local redis = self.server.dawn_sockets_handler.state_management.redis
+    if self.server and self.server.qoleng_sockets_handler and self.server.qoleng_sockets_handler.state_management then
+        local redis = self.server.qoleng_sockets_handler.state_management.redis
         if redis then
             local ok, result = pcall(function() 
                 return redis:ping() 
@@ -875,11 +875,11 @@ end
     end
 
     function FunctionalComponent:loadStateFromRedis()
-        if not (self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management and self.server.dawn_sockets_handler.state_management.redis) then
+        if not (self.server and self.server.qoleng_sockets_handler and self.server.qoleng_sockets_handler.state_management and self.server.qoleng_sockets_handler.state_management.redis) then
             return
         end
 
-        local redis = self.server.dawn_sockets_handler.state_management.redis
+        local redis = self.server.qoleng_sockets_handler.state_management.redis
         local key = "component_state:" .. (self.component_key or "")
         local ok, val = pcall(function() return redis:get(key) end)
 
@@ -1170,12 +1170,12 @@ function new_component:setClientState(ws_id, updater, comp_key)
     -- ------------------------------------------------------------------------
     -- 9. Persist to Redis (only if Redis and component key are available)
     -- ------------------------------------------------------------------------
-    if server and server.dawn_sockets_handler and
-       server.dawn_sockets_handler.state_management and
-       server.dawn_sockets_handler.state_management.redis and
+    if server and server.qoleng_sockets_handler and
+       server.qoleng_sockets_handler.state_management and
+       server.qoleng_sockets_handler.state_management.redis and
        patch_key then
 
-        local redis = server.dawn_sockets_handler.state_management.redis
+        local redis = server.qoleng_sockets_handler.state_management.redis
         local redis_key = string.format("client_state:%s:%s", patch_key, key)
 
 
@@ -1588,13 +1588,13 @@ function new_component:setState(newState, opts)
     end
     
     -- Persist to Redis if needed
-    if self.server and self.server.dawn_sockets_handler and 
-       self.server.dawn_sockets_handler.state_management and 
-       self.server.dawn_sockets_handler.state_management.redis and 
+    if self.server and self.server.qoleng_sockets_handler and 
+       self.server.qoleng_sockets_handler.state_management and 
+       self.server.qoleng_sockets_handler.state_management.redis and 
        self.component_key then
         
         
-        local redis = self.server.dawn_sockets_handler.state_management.redis
+        local redis = self.server.qoleng_sockets_handler.state_management.redis
         local key = "component_state:" .. self.component_key
         
         local ok, err = pcall(function()
@@ -1668,8 +1668,8 @@ function new_component:init(callback)
     self.collected_css = class_result.css_content
 
     -- Redis component state load (preserve existing API)
-    if self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management and self.server.dawn_sockets_handler.state_management.redis and self.component_key then
-        local redis = self.server.dawn_sockets_handler.state_management.redis
+    if self.server and self.server.qoleng_sockets_handler and self.server.qoleng_sockets_handler.state_management and self.server.qoleng_sockets_handler.state_management.redis and self.component_key then
+        local redis = self.server.qoleng_sockets_handler.state_management.redis
         local key = "component_state:" .. self.component_key
         local ok, val = pcall(function() return redis:get(key) end)
         if ok and val then
@@ -1938,9 +1938,9 @@ end
             self.server.patch_queue:push(patches_table)
         end
 
-        if self.state and self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management and type(self.server.dawn_sockets_handler.state_management.persist_state) == "function" and self.component_key then
+        if self.state and self.server and self.server.qoleng_sockets_handler and self.server.qoleng_sockets_handler.state_management and type(self.server.qoleng_sockets_handler.state_management.persist_state) == "function" and self.component_key then
             pcall(function()
-                self.server.dawn_sockets_handler.state_management:persist_state("component_state:" .. self.component_key, self.state, 3600)
+                self.server.qoleng_sockets_handler.state_management:persist_state("component_state:" .. self.component_key, self.state, 3600)
             end)
         end
     end
@@ -2062,8 +2062,8 @@ end
             component:set_WS_ID(self._ws_id)
             component:set_client_token(self.client_token)
 
-            if self.server and self.server.dawn_sockets_handler and self.server.dawn_sockets_handler.state_management and self.server.dawn_sockets_handler.state_management.redis and component.component_key then
-                local redis = self.server.dawn_sockets_handler.state_management.redis
+            if self.server and self.server.qoleng_sockets_handler and self.server.qoleng_sockets_handler.state_management and self.server.qoleng_sockets_handler.state_management.redis and component.component_key then
+                local redis = self.server.qoleng_sockets_handler.state_management.redis
                 local keyname = string.format("client_state:%s:%s", component.component_key, self.client_token or self._ws_id)
                 local loaded = redis_get_decoded(redis, keyname)
                 if loaded then

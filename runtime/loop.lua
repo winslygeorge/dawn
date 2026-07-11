@@ -14,11 +14,11 @@ local BATCH_RESTART_LIMIT = 1000  -- Increased to allow more parallel restarts f
 local Supervisor = {}
 Supervisor.__index = Supervisor
 
-function Supervisor:new(dawn_server, name, strategy, logger)
-    assert(dawn_server, "Dawn server instance is required")
+function Supervisor:new(qoleng_server, name, strategy, logger)
+    assert(qoleng_server, "Qoleng server instance is required")
     assert(logger, "Logger instance is required")
     local self = setmetatable({}, Supervisor)
-    self.dawn_server = dawn_server
+    self.qoleng_server = qoleng_server
     self.name = name or "DefaultSupervisor"
     self.strategy = strategy or "one_for_one"
     self.children = {}
@@ -94,7 +94,7 @@ function Supervisor:logFailure(child)
         self.circuitBreaker[child.name] = true
         self.logger:log(log_level.WARN, "Circuit breaker activated for " .. child.name, "Supervisor")
 
-        self.dawn_server:setTimeout(function(ctx)
+        self.qoleng_server:setTimeout(function(ctx)
             self.circuitBreaker[child.name] = false
             self.logger:log(log_level.INFO, "Circuit breaker reset for " .. child.name, "Supervisor")
         end, CIRCUIT_BREAKER_TIMEOUT)

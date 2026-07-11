@@ -1,7 +1,7 @@
-# Makefile for Dawn Lua Web Framework
+# Makefile for Qoleng Lua Web Framework
 
-PACKAGE=dawn
-VERSION=1.2-6
+PACKAGE=qoleng
+VERSION=1.1-1
 ROCKSPEC=$(PACKAGE)-$(VERSION).rockspec
 BUILD_DIR=build
 
@@ -12,7 +12,7 @@ all: build
 
 ## Step 1: Build the framework (compile .luac, .so, and rockspec)
 build:
-	@echo "🔧 Building Dawn framework..."
+	@echo "🔧 Building Qoleng framework..."
 	./build.sh
 
 ## Step 2: Clean up build artifacts
@@ -33,7 +33,7 @@ upload:
 
 ## Show help
 help:
-	@echo "🛠️  Dawn Framework Build Commands"
+	@echo "🛠️  Qoleng Framework Build Commands"
 	@echo ""
 	@echo "  make build     - Compile .luac, .so and generate rockspec"
 	@echo "  make clean     - Remove build artifacts"

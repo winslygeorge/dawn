@@ -1,5 +1,5 @@
 -- query_filter_parser.lua
--- Converts Dawn req.query table into normalized patch filters with multi, wildcard, and NOT support
+-- Converts Qoleng req.query table into normalized patch filters with multi, wildcard, and NOT support
 
 local function parseQueryFilters(query)
   query = query or {}

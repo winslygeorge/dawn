@@ -1,4 +1,4 @@
-Hello first dawn project
+Hello first qoleng project
 
 
 requirement
@@ -49,8 +49,8 @@ sudo apt update
 sudo apt install git cmake python3 g++ libssl-dev zlib1g-dev lua5.1 luajit libluajit-5.1-dev
 
 
-🌄 Dawn Framework Overview
-Dawn is a modular, async-capable Lua web framework inspired by the architectural philosophy of Phoenix (Elixir) and Express (Node.js). It supports:
+🌄 Qoleng Framework Overview
+Qoleng is a modular, async-capable Lua web framework inspired by the architectural philosophy of Phoenix (Elixir) and Express (Node.js). It supports:
 
 RESTful HTTP routing
 
@@ -98,7 +98,7 @@ Middleware: jwt_protect.lua, rate_limiting_middleware.lua, session_middleware.lu
 Token rotation, revocation, and token_store.lua pluggable backends
 
 ✅ 5. WebSockets
-dawn_sockets.lua: Phoenix-style channel system
+qoleng_sockets.lua: Phoenix-style channel system
 
 Presence tracking via presence_interface.lua
 

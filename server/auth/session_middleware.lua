@@ -12,7 +12,7 @@ end
 
 return function(options)
     options = options or {}
-    local cookie_name = options.cookie_name or "dawn_sid"
+    local cookie_name = options.cookie_name or "qoleng_sid"
     local session_store = options.store or {}
 
     return function(req, res, next)

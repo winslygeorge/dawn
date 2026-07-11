@@ -1,4 +1,4 @@
--- dawn_server.lua
+-- qoleng_server.lua
 
 local uws = require("uwebsockets")
 local Supervisor = require("runtime.loop")
@@ -10,7 +10,7 @@ local log_level = require('utils.logger').LogLevel
 local TokenCleaner = require("auth.token_cleaner")
 local Logger = require("utils.logger").Logger
 local ServerpatchQueue = require('utils.server_patch_queue')
-local DawnWatcher = require('utils.DawnWatcher')
+local QolengWatcher = require('utils.QolengWatcher')
 local app_uws = nil
 
 local restart_self = nil
@@ -79,7 +79,7 @@ function TrieNode:insert(method, route, handler)
     node.isEndOfPath = true
     node.handlers[method] = handler  -- Store handler by method
     
-    self.log:log(log_level.DEBUG, string.format("Registered route: %s %s", method, route), "DawnServer")
+    self.log:log(log_level.DEBUG, string.format("Registered route: %s %s", method, route), "QolengServer")
 end
 
 function TrieNode:search(method, path)
@@ -120,22 +120,22 @@ function TrieNode:search(method, path)
     if node and node.isEndOfPath and node.handlers[method] then
         return node.handlers[method], params
     else
-        self.log:log(log_level.DEBUG, string.format("Handler not found for method %s at path %s", method, path), "DawnServer")
+        self.log:log(log_level.DEBUG, string.format("Handler not found for method %s at path %s", method, path), "QolengServer")
         return nil, {}
     end
 end
 
-local DawnServer = {}
-DawnServer.__index = DawnServer
+local QolengServer = {}
+QolengServer.__index = QolengServer
 
-function DawnServer:new(config)
-    local self = setmetatable({}, DawnServer)
-    self.dawnProcessChild = nil
+function QolengServer:new(config)
+    local self = setmetatable({}, QolengServer)
+    self.qolengProcessChild = nil
     self.config = config or {}
     self.uws = uws.create_app()
     app_uws = self.uws
     self.logger = Logger:new(self)
-    self.logger:setComponentLevel("DawnServer", config.level)
+    self.logger:setComponentLevel("QolengServer", config.level)
     self.router = TrieNode:new(self.logger)
     self.middlewares = {}
     self.error_handlers = { middleware = nil, route = {} }
@@ -162,24 +162,24 @@ function DawnServer:new(config)
     -- New member to store static file configurations
     self.static_configs = config.static_configs or {}
 
-    local DawnSockets = require("dawn_sockets")
-    self.dawn_sockets_handler = DawnSockets:new(self, self.supervisor, self.shared_state, self.config.state_management_options or {})
+    local QolengSockets = require("qoleng_sockets")
+    self.qoleng_sockets_handler = QolengSockets:new(self, self.supervisor, self.shared_state, self.config.state_management_options or {})
     if(self.heartbeat_config) then 
-    self.dawn_sockets_handler:start_heartbeat(self.heartbeat_config.interval, self.heartbeat_config.timeout) -- Start heartbeat with 10 seconds interval
+    self.qoleng_sockets_handler:start_heartbeat(self.heartbeat_config.interval, self.heartbeat_config.timeout) -- Start heartbeat with 10 seconds interval
     end
 
     if(self.reactive_render_engine) then
-        self.dawn_sockets_handler:setReactiveRenderEngine(self.reactive_render_engine)
+        self.qoleng_sockets_handler:setReactiveRenderEngine(self.reactive_render_engine)
     end
 
     if self.token_store.store then
-        self.logger:log(log_level.INFO, "SETTING UP LOGGER", 'dawn_server', 345)
+        self.logger:log(log_level.INFO, "SETTING UP LOGGER", 'qoleng_server', 345)
 
         local cleaner = TokenCleaner:new("TokenCleaner", self.token_store.cleanup_interval, self)
         self.supervisor:startChild(cleaner)
     end
 
-    self.dev_watcher = DawnWatcher:new(self, config.dev_watcher_config or {
+    self.dev_watcher = QolengWatcher:new(self, config.dev_watcher_config or {
         interval = 1, -- seconds
         paths = {
             components = "./lib/*.lua",
@@ -194,13 +194,13 @@ function DawnServer:new(config)
     return self
 end
 
-function DawnServer:on_error(error_type, handler)
+function QolengServer:on_error(error_type, handler)
     assert(error_type == "middleware" or error_type == "route", "Invalid error handler type. Must be 'middleware' or 'route'.")
     assert(type(handler) == "function", "Error handler must be a function.")
     self.error_handlers[error_type] = handler
 end
 
-function DawnServer:on_route_error(route, handler)
+function QolengServer:on_route_error(route, handler)
     assert(type(route) == "string", "Route for error handler must be a string.")
     assert(type(handler) == "function", "Route error handler must be a function.")
     self.error_handlers.route[route:lower()] = handler
@@ -218,15 +218,15 @@ local REQUIRED_COMPONENT_METHODS = {
 -- Stores it in shared_state under a given key.
 -- @param component table - Component instance (with .patch, .setState, .renderAppPage)
 -- @param key string? - Storage key (default: "app_component_instance")
-function DawnServer:register_reactive_component(component, key)
+function QolengServer:register_reactive_component(component, key)
     key = key or "app_component_instance"
 
     if not self or not self.shared_state then
-        error("[Dawn] Cannot register component: server not attached or missing shared_state.")
+        error("[Qoleng] Cannot register component: server not attached or missing shared_state.")
     end
 
     if type(component) ~= "table" then
-        error("[Dawn] Component must be a table, got: " .. type(component))
+        error("[Qoleng] Component must be a table, got: " .. type(component))
     end
 
     -- Validate required methods
@@ -247,7 +247,7 @@ end
 --- 🔍 Get a reactive component from shared_state.
 -- @param key string? - Component key (default: "app_component_instance")
 -- @return table | nil - The component instance or nil
-function DawnServer:get_component(key)
+function QolengServer:get_component(key)
     key = key or "app_component_instance"
     if not self or not self.shared_state then return nil end
 
@@ -261,7 +261,7 @@ end
 --- 🧠 Get just the current state of a reactive component.
 -- @param key string? - Component key
 -- @return table - Component state (or empty table if missing)
-function DawnServer:get_component_state(key)
+function QolengServer:get_component_state(key)
     local comp = self:get_component(key)
     return comp and comp.state or {}
 end
@@ -271,14 +271,14 @@ end
 -- @param component_key string
 -- @param field string
 -- @return string
-function DawnServer:get_patch_namespace(component_key, field)
+function QolengServer:get_patch_namespace(component_key, field)
     if component_key and field then
         return component_key .. "." .. field
     end
     return field or ""
 end
 
-function DawnServer:use(middleware, route)
+function QolengServer:use(middleware, route)
     assert(type(middleware) == "function", "Middleware must be a function")
     table.insert(self.middlewares, {
         func = middleware,
@@ -287,7 +287,7 @@ function DawnServer:use(middleware, route)
     })
 end
 
-function DawnServer:addRoute(method, path, handler, opts)
+function QolengServer:addRoute(method, path, handler, opts)
     if not self.routes[method] then
         self.routes[method] = {}
     end
@@ -301,26 +301,26 @@ function DawnServer:addRoute(method, path, handler, opts)
     self.router:insert(method, path, handler)
 end
 
-function DawnServer:scope(prefix, func)
+function QolengServer:scope(prefix, func)
     table.insert(self.route_scopes, prefix)
     func(self)
     table.remove(self.route_scopes)
 end
 
 for _, method in ipairs({"get", "post", "put", "delete", "patch", "head", "options"}) do
-    DawnServer[method] = function(self, route, handler)
+    QolengServer[method] = function(self, route, handler)
         local scoped_route = table.concat(self.route_scopes, "") .. route
         self:addRoute(method, scoped_route, handler)
     end
 end
 
-function DawnServer:ws(route, handler)
+function QolengServer:ws(route, handler)
     local scoped_route = table.concat(self.route_scopes, "") .. route
     self:addRoute("WS", scoped_route, handler)
 end
 
 -- New function to add static file serving configuration
-function DawnServer:serveStatic(route_prefix, directory_path)
+function QolengServer:serveStatic(route_prefix, directory_path)
     assert(type(route_prefix) == "string", "Route prefix for static serving must be a string.")
     assert(type(directory_path) == "string", "Directory path for static serving must be a string.")
     table.insert(self.static_configs, {
@@ -330,27 +330,27 @@ function DawnServer:serveStatic(route_prefix, directory_path)
 end
 
 -- Corrected wrapper to use a dot for a regular function call
-function DawnServer:setInterval(callback, interval, ...)
+function QolengServer:setInterval(callback, interval, ...)
     return self.uws.setInterval(callback, interval, ...)
 end
 
 -- Corrected wrapper to use a dot for a regular function call
-function DawnServer:setTimeout(callback, delay, ...)
+function QolengServer:setTimeout(callback, delay, ...)
     return self.uws.setTimeout(callback, delay, ...)
 end
 
 -- The clearTimer function is fine, as it's a single argument.
-function DawnServer:clearTimer(timer_id)
+function QolengServer:clearTimer(timer_id)
     return self.uws.clearTimer(timer_id)
 end
 
 -- New function to send SSE data
-function DawnServer:sse_send(sse_id, data)
+function QolengServer:sse_send(sse_id, data)
     return self.uws.sse_send(sse_id, data)
 end
 
 -- New function to close SSE connection
-function DawnServer:sse_close(sse_id)
+function QolengServer:sse_close(sse_id)
     return self.uws.sse_close(sse_id)
 end
 
@@ -360,40 +360,40 @@ end
 -- @param body string (default "")
 -- @param headers table { ["Header"] = "Value" }
 -- @param callback function(res) called with {status, body, headers, error}
-function DawnServer:http_request(url, method, body, headers, callback)
+function QolengServer:http_request(url, method, body, headers, callback)
     assert(type(url) == "string", "url must be a string")
     assert(type(callback) == "function", "callback must be a function")
     return self.uws.http_request(url, method or "GET", body or "", headers or {}, callback)
 end
 
 --- 🔗 Convenience GET wrapper
-function DawnServer:http_get(url, callback, headers)
+function QolengServer:http_get(url, callback, headers)
     return self:http_request(url, "GET", "", headers or {}, callback)
 end
 
 --- 🔗 Convenience POST wrapper
-function DawnServer:http_post(url, body, callback, headers)
+function QolengServer:http_post(url, body, callback, headers)
     return self:http_request(url, "POST", body or "", headers or {}, callback)
 end
 
 -- Convenience PUT wrapper
-function DawnServer:http_put(url, body, callback, headers)
+function QolengServer:http_put(url, body, callback, headers)
     return self:http_request(url, "PUT", body or "", headers or {}, callback)
 end
 -- Convenience DELETE wrapper
-function DawnServer:http_delete(url, callback, headers)
+function QolengServer:http_delete(url, callback, headers)
     return self:http_request(url, "DELETE", "", headers or {}, callback)
 end
 -- Convenience PATCH wrapper
-function DawnServer:http_patch(url, body, callback, headers)
+function QolengServer:http_patch(url, body, callback, headers)
     return self:http_request(url, "PATCH", body or "", headers or {}, callback)
 end
 -- Convenience HEAD wrapper
-function DawnServer:http_head(url, callback, headers)
+function QolengServer:http_head(url, callback, headers)
     return self:http_request(url, "HEAD", "", headers or {}, callback)
 end
 -- Convenience OPTIONS wrapper
-function DawnServer:http_options(url, callback, headers)
+function QolengServer:http_options(url, callback, headers)
     return self:http_request(url, "OPTIONS", "", headers or {}, callback)
 end
 
@@ -404,7 +404,7 @@ end
 
 
 -- 🔄 Enhanced Redirect Helper
-function DawnServer:redirect(res, location, options)
+function QolengServer:redirect(res, location, options)
     local opts = {}
     
     -- Handle different parameter formats
@@ -460,7 +460,7 @@ function DawnServer:redirect(res, location, options)
             statusLine,
             opts.flash or "none"
         ),
-        "DawnServer"
+        "QolengServer"
     )
 end
 
@@ -472,7 +472,7 @@ end
 --- 🔹 Sync read file
 -- @param path string
 -- @return string|nil, string|nil (content, error)
-function DawnServer:read_file(path)
+function QolengServer:read_file(path)
     return self.uws.sync_read_file(path)
 end
 
@@ -480,14 +480,14 @@ end
 -- @param path string
 -- @param data string
 -- @return boolean, string|nil (success, error)
-function DawnServer:write_file(path, data)
+function QolengServer:write_file(path, data)
     return self.uws.sync_write_file(path, data)
 end
 
 --- 🔹 Async read file
 -- @param path string
 -- @param cb function(content, err)
-function DawnServer:async_read_file(path, cb)
+function QolengServer:async_read_file(path, cb)
     assert(type(cb) == "function", "callback must be a function")
     self.uws.async_read_file(path, function(content, err)
         cb(content, err)
@@ -498,7 +498,7 @@ end
 -- @param path string
 -- @param data string
 -- @param cb function(success, err)
-function DawnServer:async_write_file(path, data, cb)
+function QolengServer:async_write_file(path, data, cb)
     assert(type(cb) == "function", "callback must be a function")
     self.uws.async_write_file(path, data, function(success, err)
         cb(success, err)
@@ -506,7 +506,7 @@ function DawnServer:async_write_file(path, data, cb)
 end
 
 -- function to execute async tasks
-function DawnServer:async(func, ...)
+function QolengServer:async(func, ...)
     assert(type(func) == "function", "First argument must be a function")
     self.uws.execute_async(func, ...)
 end
@@ -514,7 +514,7 @@ end
 --- 🔹 File exists?
 -- @param path string
 -- @return boolean
-function DawnServer:file_exists(path)
+function QolengServer:file_exists(path)
     local f = io.open(path, "rb")
     if f then
         f:close()
@@ -524,7 +524,7 @@ function DawnServer:file_exists(path)
 end
 
 --- 🔹 JSON helpers (if dkjson or cjson is available)
-function DawnServer:read_json(path, decode)
+function QolengServer:read_json(path, decode)
     local content, err = self:read_file(path)
     if not content then return nil, err end
     local ok, result = pcall(decode or json.decode, content)
@@ -534,7 +534,7 @@ function DawnServer:read_json(path, decode)
     return result, nil
 end
 
-function DawnServer:write_json(path, tbl, encode)
+function QolengServer:write_json(path, tbl, encode)
     local ok, result = pcall(encode or json.encode, tbl)
     if not ok then
         return false, "Failed to encode JSON: " .. tostring(result)
@@ -548,7 +548,7 @@ end
 -- @param path string
 -- @param chunk_size integer? (default 65536)
 -- @param cb function(chunk, err)
-function DawnServer:stream_read_file(path, chunk_size, cb)
+function QolengServer:stream_read_file(path, chunk_size, cb)
     assert(type(cb) == "function", "callback must be a function")
     if type(chunk_size) == "function" then
         cb = chunk_size
@@ -565,18 +565,18 @@ end
 -- @param path string
 -- @param data string
 -- @return boolean, string|nil
-function DawnServer:stream_write_file(path, data)
+function QolengServer:stream_write_file(path, data)
     return self.uws.stream_write_file(path, data)
 end
 
 
 
-function DawnServer:printRoutes()
-    self.logger:log(log_level.INFO, "Registered Routes:", "DawnServer")
+function QolengServer:printRoutes()
+    self.logger:log(log_level.INFO, "Registered Routes:", "QolengServer")
     local function printNodeRoutes(node, prefix)
         if node.handlers and next(node.handlers) then
             for method, handler in pairs(node.handlers) do
-                self.logger:log(log_level.INFO, "  " .. method:upper() .. " " .. prefix, "DawnServer")
+                self.logger:log(log_level.INFO, "  " .. method:upper() .. " " .. prefix, "QolengServer")
             end
         end
         for path, child in pairs(node.children) do
@@ -633,7 +633,7 @@ local function executeMiddleware(self, req, res, route, middlewares, index)
         end)
 
         if not ok then
-            self.logger:log(log_level.ERROR, "Error in middleware: " .. tostring(err), "DawnServer")
+            self.logger:log(log_level.ERROR, "Error in middleware: " .. tostring(err), "QolengServer")
             if type(self.error_handlers.middleware) == "function" then
                 self.error_handlers.middleware(req, res, err)
             else
@@ -654,7 +654,7 @@ end
 
 
 
-function DawnServer:run()
+function QolengServer:run()
     if self.running then return end
     self.running = true
     -- self.uws.create_app()
@@ -695,7 +695,7 @@ function DawnServer:run()
             tostring(handler_info ~= nil),
             json.encode(params)
         ),
-        "DawnServer"
+        "QolengServer"
     )
 
     if not handleCORS(req, res) then return end
@@ -717,7 +717,7 @@ function DawnServer:run()
                 if not ok then
                     self_ref.logger:log(log_level.ERROR,
                         string.format("Error in route handler for %s %s: %s", method, path, tostring(err)),
-                        "DawnServer")
+                        "QolengServer")
                     local route_error_handler = self_ref.error_handlers.route[path:lower()]
                     if type(route_error_handler) == "function" then
                         route_error_handler(req, res, err)
@@ -748,7 +748,7 @@ if content_type:sub(1, #multipart_marker) == multipart_marker then
                     self_ref.logger:log(
                         log_level.ERROR,
                         string.format("Failed to open file for writing: %s", tostring(err)),
-                        "DawnServer"
+                        "QolengServer"
                     )
                     return
                 end
@@ -788,7 +788,7 @@ if content_type:sub(1, #multipart_marker) == multipart_marker then
         if not f then
             self_ref.logger:log(log_level.ERROR,
                 string.format("Failed to open temp upload file: %s", tostring(err)),
-                "DawnServer")
+                "QolengServer")
         else
             is_tempfile = true
             while true do
@@ -820,7 +820,7 @@ if content_type:sub(1, #multipart_marker) == multipart_marker then
         if not ok then
             self_ref.logger:log(log_level.ERROR,
                 string.format("Error in multipart handler for %s %s: %s", method, path, tostring(err)),
-                "DawnServer")
+                "QolengServer")
             local route_error_handler = self_ref.error_handlers.route[path:lower()]
             if type(route_error_handler) == "function" then
                 route_error_handler(req, res, err)
@@ -847,7 +847,7 @@ else
                                 self_ref.logger:log(
                                     log_level.ERROR,
                                     string.format("Error parsing JSON body for %s %s: %s", method, path, parse_error),
-                                    "DawnServer"
+                                    "QolengServer"
                                 )
                             end
                         elseif content_type:lower():find("application/x-www-form-urlencoded", 1, true) then
@@ -868,7 +868,7 @@ else
                             self_ref.logger:log(
                                 log_level.ERROR,
                                 string.format("Error in route handler for %s %s: %s", method, path, tostring(err)),
-                                "DawnServer"
+                                "QolengServer"
                             )
                             local rouzte_error_handler = self_ref.error_handlers.route[path:lower()]
                             if type(route_error_handler) == "function" then
@@ -921,13 +921,13 @@ local function registerRouteHandlers(node, prefix)
                         end
                         local ok = executeMiddleware(self_ref, fake_req, fake_res, routePath, self_ref.middlewares, 1)
                         if ok then
-                            self_ref.dawn_sockets_handler:handle_open( ws, message)
+                            self_ref.qoleng_sockets_handler:handle_open( ws, message)
                         else
                         end
                     elseif event == "message" then
-                        self_ref.dawn_sockets_handler:handle_message( ws, message, code)
+                        self_ref.qoleng_sockets_handler:handle_message( ws, message, code)
                     elseif event == "close" then
-                        self_ref.dawn_sockets_handler:handle_close( ws, code, reason)
+                        self_ref.qoleng_sockets_handler:handle_close( ws, code, reason)
                     end
                 end)
             elseif method_lower == "get" or method_lower == "delete" or method_lower == "head" or method_lower == "options" then
@@ -986,7 +986,7 @@ end
 
     -- Register static file serving using the new self.uws.serve_static function
     for _, config in ipairs(self_ref.static_configs) do
-        self_ref.logger:log(log_level.INFO, string.format("Serving static files from '%s' at route '%s'", config.directory_path, config.route_prefix), "DawnServer")
+        self_ref.logger:log(log_level.INFO, string.format("Serving static files from '%s' at route '%s'", config.directory_path, config.route_prefix), "QolengServer")
         self.uws.serve_static(config.route_prefix, config.directory_path)
 
     end
@@ -994,7 +994,7 @@ end
     self:printRoutes()
     self.uws.listen(self.port, function(token)
         if token then
-            self.logger:log(log_level.INFO, "Server started on port " .. self.port, "DawnServer")
+            self.logger:log(log_level.INFO, "Server started on port " .. self.port, "QolengServer")
         end
     end)
 
@@ -1017,7 +1017,7 @@ local function decodeURIComponent(str)
     return str
 end
 
-function DawnServer:restart_run()
+function QolengServer:restart_run()
     -- Re-register route handlers
     local self_ref = self
 
@@ -1039,7 +1039,7 @@ function DawnServer:restart_run()
         self_ref.logger:log(log_level.DEBUG,
             string.format("Method: %s, Path: %s, Handler Found: %s",
                 method, path, tostring(handler_info ~= nil)),
-            "DawnServer"
+            "QolengServer"
         )
 
         if not handleCORS(req, res) then return end
@@ -1057,7 +1057,7 @@ function DawnServer:restart_run()
                         self_ref.logger:log(log_level.ERROR,
                             string.format("Error in route handler for %s %s: %s",
                                 method, path, tostring(err)),
-                            "DawnServer"
+                            "QolengServer"
                         )
                         local route_error_handler = self_ref.error_handlers.route[path:lower()]
                         if type(route_error_handler) == "function" then
@@ -1099,7 +1099,7 @@ function DawnServer:restart_run()
                             self_ref.logger:log(log_level.ERROR,
                                 string.format("Error in route handler for %s %s: %s",
                                     method, path, tostring(err)),
-                                "DawnServer"
+                                "QolengServer"
                             )
                             local route_error_handler = self_ref.error_handlers.route[path:lower()]
                             if type(route_error_handler) == "function" then
@@ -1142,12 +1142,12 @@ function DawnServer:restart_run()
                             end
                             local ok = executeMiddleware(self_ref, fake_req, fake_res, routePath, self_ref.middlewares, 1)
                             if ok then
-                                self_ref.dawn_sockets_handler:handle_open(ws, message)
+                                self_ref.qoleng_sockets_handler:handle_open(ws, message)
                             end
                         elseif event == "message" then
-                            self_ref.dawn_sockets_handler:handle_message(ws, message, code)
+                            self_ref.qoleng_sockets_handler:handle_message(ws, message, code)
                         elseif event == "close" then
-                            self_ref.dawn_sockets_handler:handle_close(ws, code, reason)
+                            self_ref.qoleng_sockets_handler:handle_close(ws, code, reason)
                         end
                     end)
                 elseif method_lower == "get" and routePath:find("/sse/") then
@@ -1204,7 +1204,7 @@ function DawnServer:restart_run()
         self_ref.logger:log(log_level.INFO,
             string.format("Serving static files from '%s' at route '%s'",
                 config.directory_path, config.route_prefix),
-            "DawnServer"
+            "QolengServer"
         )
         self.uws.serve_static(config.route_prefix, config.directory_path)
     end
@@ -1213,15 +1213,15 @@ function DawnServer:restart_run()
 end
 
 
-function DawnServer:restart()
-   return  self.supervisor:restartChild(self.dawnProcessChild)
+function QolengServer:restart()
+   return  self.supervisor:restartChild(self.qolengProcessChild)
 end
 
-function DawnServer:stop()
+function QolengServer:stop()
     if self.running then
         self.running = false
         self.uws.cleanup_app()
-        self.logger:log(log_level.INFO, "Dawn Server stopped", "DawnServer")
+        self.logger:log(log_level.INFO, "Qoleng Server stopped", "QolengServer")
     end
 end
 
@@ -1240,25 +1240,25 @@ function on_restart_register(app)
 end
 
 
-function DawnServer:start()
-    self.dawnProcessChild = {
-        name = "DawnServer_Supervisor",
+function QolengServer:start()
+    self.qolengProcessChild = {
+        name = "QolengServer_Supervisor",
         start = function()
             --  if self.dev_watcher then
             --         self.dev_watcher:start()
             -- end
-            self.logger:log(log_level.INFO, "Dawn Server connection started ".. self.port, "DawnServer")
+            self.logger:log(log_level.INFO, "Qoleng Server connection started ".. self.port, "QolengServer")
             self:run()
             local ok, err = pcall(self.uws.run)
             if not ok then
-                self.logger:log(log_level.ERROR, "Fatal server error: " .. tostring(err), "DawnServer")
+                self.logger:log(log_level.ERROR, "Fatal server error: " .. tostring(err), "QolengServer")
                 return false
             end
 
             return true
         end,
         stop = function()
-            self.logger:log(log_level.INFO, "Dawn Server connection stopped", "DawnServer")
+            self.logger:log(log_level.INFO, "Qoleng Server connection stopped", "QolengServer")
             -- if self.dev_watcher then
             --     self.dev_watcher:stop()
             -- end
@@ -1268,7 +1268,7 @@ function DawnServer:start()
         end,
         restart = function()
             if not self.running then
-                self.logger:log(log_level.WARN, "Server is not running, cannot restart.", "DawnServer")
+                self.logger:log(log_level.WARN, "Server is not running, cannot restart.", "QolengServer")
                 return
             end
 
@@ -1296,8 +1296,8 @@ function DawnServer:start()
         restart_count = 5,
         backoff = 5000
     }
-    self.supervisor:startChild(self.dawnProcessChild)
+    self.supervisor:startChild(self.qolengProcessChild)
 end
 
 
-return DawnServer
+return QolengServer

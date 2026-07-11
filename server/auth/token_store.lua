@@ -12,7 +12,7 @@ local config = {
     cleanup_expired = true,
     max_session_age = 7 * 86400,     -- 7 days max session (absolute cap), nil to disable
     cleanup_interval = 3600,         -- run auto-cleanup every 1 hour (in seconds)
-    secrete = "dawn_sever_key"
+    secrete = "qoleng_sever_key"
 }
 
 local function load_store()
