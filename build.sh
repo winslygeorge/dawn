@@ -4,7 +4,7 @@ set -e
 
 # === CONFIGURATION ===
 PACKAGE="qoleng"
-VERSION="1.1-1"
+VERSION="1.1-2"
 ROCKSPEC_NAME="$PACKAGE-$VERSION.rockspec"
 C_SRC="server/check_version.cpp"
 

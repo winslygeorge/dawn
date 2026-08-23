@@ -1,5 +1,5 @@
 package = "qoleng"
-version = "1.1-1"
+version = "1.1-2"
 
 source = {
    url = "https://github.com/winslygeorge/dawn/archive/master.zip",

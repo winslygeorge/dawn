@@ -1,7 +1,7 @@
 # Makefile for Qoleng Lua Web Framework
 
 PACKAGE=qoleng
-VERSION=1.1-1
+VERSION=1.1-2
 ROCKSPEC=$(PACKAGE)-$(VERSION).rockspec
 BUILD_DIR=build
 
