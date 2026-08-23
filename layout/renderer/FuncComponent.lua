@@ -21,6 +21,29 @@ local assert = assert
 local pcall = pcall
 local tostring = tostring
 
+-- Renders an attrs table (e.g. {rel="stylesheet", href="/x.css"}) into a raw
+-- HTML tag string. Used for head assets registered via addCSSFile/addJSFile/
+-- addHeadLink when producing plain-string HTML (renderFragmentWithAssets).
+local function attrs_to_html_string(attrs)
+    local parts = {}
+    for k, v in pairs(attrs or {}) do
+        if v == true then
+            table_insert(parts, tostring(k))
+        elseif v ~= false and v ~= nil then
+            table_insert(parts, string.format('%s="%s"', tostring(k), tostring(v)))
+        end
+    end
+    return table.concat(parts, " ")
+end
+
+local function render_link_tag_string(attrs)
+    return "<link " .. attrs_to_html_string(attrs) .. ">"
+end
+
+local function render_external_script_tag_string(attrs)
+    return "<script " .. attrs_to_html_string(attrs) .. "></script>"
+end
+
 local FunctionalComponent = {}
 
 function FunctionalComponent:new(data)
@@ -42,6 +65,11 @@ function FunctionalComponent:extends()
         palette = "light",
         collected_css = nil,
         collected_js_scripts = {},
+        -- head_assets: external assets this component wants injected into <head>
+        -- css_links:  { {rel="stylesheet", href="...", ...}, ... }
+        -- js_files:   { {src="...", type="module", ...}, ... }
+        -- other_links:{ {rel="preload"/"icon"/"manifest"/etc, href="...", ...}, ... }
+        head_assets = { css_links = {}, js_files = {}, other_links = {} },
         reactive_root_node = nil,
         reactive_render_fn = nil,
         view_mode = nil,
@@ -1945,6 +1973,108 @@ end
         end
     end
 
+    --- Registers an external stylesheet (<link rel="stylesheet" href="...">) to be
+    --- injected into the page <head> when this component (or an ancestor) is rendered
+    --- via renderAppPage()/build(), or prepended to renderFragmentWithAssets() output.
+    --- @param href string URL of the CSS file.
+    --- @param attrs table? Extra <link> attributes (e.g. { media = "print" }). rel/href are set automatically.
+    function new_component:addCSSFile(href, attrs)
+        assert(type(href) == "string" and href ~= "", "addCSSFile requires a non-empty href string")
+        self.head_assets = self.head_assets or { css_links = {}, js_files = {}, other_links = {} }
+        local entry = {}
+        for k, v in pairs(attrs or {}) do entry[k] = v end
+        entry.rel = entry.rel or "stylesheet"
+        entry.href = href
+        table_insert(self.head_assets.css_links, entry)
+        return self
+    end
+
+    --- Registers an external JS file (<script src="...">) to be injected into the
+    --- page <head>. Use this for real files (CDN libs, /static/... bundles) as
+    --- opposed to raw inline JS (see addInlineJS).
+    --- @param src string URL of the JS file.
+    --- @param attrs table? Extra <script> attributes (e.g. { type = "module", defer = true }).
+    function new_component:addJSFile(src, attrs)
+        assert(type(src) == "string" and src ~= "", "addJSFile requires a non-empty src string")
+        self.head_assets = self.head_assets or { css_links = {}, js_files = {}, other_links = {} }
+        local entry = {}
+        for k, v in pairs(attrs or {}) do entry[k] = v end
+        entry.src = src
+        table_insert(self.head_assets.js_files, entry)
+        return self
+    end
+
+    --- Registers an arbitrary <link> tag (favicon, preload, preconnect, manifest,
+    --- webfont, etc.) to be injected into the page <head>.
+    --- @param attrs table Full <link> attributes table, must include at least href (and normally rel).
+    function new_component:addHeadLink(attrs)
+        assert(type(attrs) == "table" and attrs.href, "addHeadLink requires an attrs table with an href")
+        self.head_assets = self.head_assets or { css_links = {}, js_files = {}, other_links = {} }
+        local entry = {}
+        for k, v in pairs(attrs) do entry[k] = v end
+        table_insert(self.head_assets.other_links, entry)
+        return self
+    end
+
+    --- Convenience wrapper to push raw inline JS (rendered as <script>...</script>).
+    --- Equivalent to what a reactive render function does with its collected_js_scripts arg.
+    function new_component:addInlineJS(code)
+        assert(type(code) == "string", "addInlineJS requires a string of JS code")
+        self.collected_js_scripts = self.collected_js_scripts or {}
+        table_insert(self.collected_js_scripts, code)
+        return self
+    end
+
+    --- Convenience wrapper to append raw inline CSS (rendered as <style>...</style>).
+    function new_component:addInlineCSS(css)
+        assert(type(css) == "string", "addInlineCSS requires a string of CSS")
+        self.collected_css = self.collected_css and (self.collected_css .. "\n" .. css) or css
+        return self
+    end
+
+    --- Recursively walks this component and all of its children, merging every
+    --- registered head_assets entry into one deduplicated table. Dedup keys:
+    --- css_links by href, js_files by src, other_links by "rel|href".
+    --- @return table { css_links = {...}, js_files = {...}, other_links = {...} }
+    function new_component:collectHeadAssets()
+        local seen_css, seen_js, seen_links = {}, {}, {}
+        local merged = { css_links = {}, js_files = {}, other_links = {} }
+
+        local function merge_from(component)
+            if type(component) ~= "table" then return end
+            local ha = component.head_assets
+            if ha then
+                for _, entry in ipairs(ha.css_links or {}) do
+                    if entry.href and not seen_css[entry.href] then
+                        seen_css[entry.href] = true
+                        table_insert(merged.css_links, entry)
+                    end
+                end
+                for _, entry in ipairs(ha.js_files or {}) do
+                    if entry.src and not seen_js[entry.src] then
+                        seen_js[entry.src] = true
+                        table_insert(merged.js_files, entry)
+                    end
+                end
+                for _, entry in ipairs(ha.other_links or {}) do
+                    local dedup_key = tostring(entry.rel) .. "|" .. tostring(entry.href)
+                    if entry.href and not seen_links[dedup_key] then
+                        seen_links[dedup_key] = true
+                        table_insert(merged.other_links, entry)
+                    end
+                end
+            end
+            if component.children then
+                for _, child in pairs(component.children) do
+                    merge_from(child)
+                end
+            end
+        end
+
+        merge_from(self)
+        return merged
+    end
+
     function new_component:build()
         if self.view_mode == "lustache" then
             self.props.children = self.children
@@ -2004,6 +2134,21 @@ end
         local fragment_html = self.HTMLReactive.render(self.reactive_root_node)
         local styles = self.collected_css and ("<style>" .. self.collected_css .. "</style>") or ""
 
+        -- External assets (CSS files, arbitrary <link> tags, JS files) registered
+        -- by this component or any of its children via addCSSFile/addHeadLink/addJSFile.
+        local head_assets = self:collectHeadAssets()
+        local asset_tags = {}
+        for _, link_attrs in ipairs(head_assets.css_links) do
+            table_insert(asset_tags, render_link_tag_string(link_attrs))
+        end
+        for _, link_attrs in ipairs(head_assets.other_links) do
+            table_insert(asset_tags, render_link_tag_string(link_attrs))
+        end
+        for _, script_attrs in ipairs(head_assets.js_files) do
+            table_insert(asset_tags, render_external_script_tag_string(script_attrs))
+        end
+        local asset_html = table.concat(asset_tags, "\n")
+
         local scripts = {}
         table_insert(scripts, "<script src='https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js'></script>")
         if opts.state then
@@ -2025,11 +2170,12 @@ end
             table_insert(scripts, "<script>" .. js .. "</script>")
         end
 
-        return styles .. fragment_html .. table.concat(scripts, "\n")
+        return asset_html .. styles .. fragment_html .. table.concat(scripts, "\n")
     end
 
     function new_component:renderAppPage(config)
         local node, css_list, js_list = self:build()
+        local head_assets = self:collectHeadAssets()
         return self.HTMLReactive.App({
             title = config.title or "Untitled",
             state = config.state or {},
@@ -2037,6 +2183,9 @@ end
             include_patch_client = config.include_patch_client ~= false,
             component_css = css_list,
             component_js_scripts = js_list,
+            component_css_links = head_assets.css_links,
+            component_js_files = head_assets.js_files,
+            component_head_links = head_assets.other_links,
             children = { node },
             head_extra = config.head_extra,
             body_attrs = config.body_attrs

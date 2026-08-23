@@ -4687,6 +4687,9 @@ end
 --- @field config.filters table? (Optional) JSON config for client patch filters.
 --- @field config.component_css string[]? A list of CSS strings from components to be inlined.
 --- @field config.component_js_scripts string[]? A list of raw JavaScript strings from components to be inlined.
+--- @field config.component_css_links table[]? A list of <link> attrs tables for external stylesheets, e.g. { { rel = "stylesheet", href = "/x.css" } }.
+--- @field config.component_js_files table[]? A list of <script> attrs tables for external JS files, e.g. { { src = "/x.js", type = "module" } }.
+--- @field config.component_head_links table[]? A list of arbitrary <link> attrs tables (icons, preloads, fonts, manifest, etc.).
 --- @field config.include_patch_client boolean? If false, omits the default patchClient.js script. Defaults to true.
 --- @field config.title string? The page title. Defaults to "Qoleng Untitled".
 --- @field config.body_attrs table? Attributes for the <body> tag.
@@ -4699,6 +4702,11 @@ function HTML.App(config)
     local filters = config.filters
     local collected_component_css = config.component_css or {}
     local collected_component_js_scripts = config.component_js_scripts or {}
+    -- External assets registered by components via addCSSFile/addJSFile/addHeadLink
+    -- (as opposed to component_css/component_js_scripts, which are raw inline strings).
+    local collected_component_css_links = config.component_css_links or {}
+    local collected_component_js_files = config.component_js_files or {}
+    local collected_component_head_links = config.component_head_links or {}
 
     -- Define the new head elements to be inserted
     local new_head_elements = {
@@ -4720,6 +4728,21 @@ function HTML.App(config)
     -- Add the new elements to the head_elements table at the beginning
     for _, el in ipairs(new_head_elements) do
         table.insert(head_elements, el)
+    end
+
+    -- 4.5 External CSS files registered by components (<link rel="stylesheet" href="...">)
+    for _, link_attrs in ipairs(collected_component_css_links) do
+        table.insert(head_elements, HTML.e("link", link_attrs))
+    end
+
+    -- 4.6 Other <link> tags registered by components (fonts, icons, preloads, manifests, etc.)
+    for _, link_attrs in ipairs(collected_component_head_links) do
+        table.insert(head_elements, HTML.e("link", link_attrs))
+    end
+
+    -- 4.7 External JS files registered by components (<script src="...">)
+    for _, script_attrs in ipairs(collected_component_js_files) do
+        table.insert(head_elements, HTML.e("script", script_attrs))
     end
 
     -- 5. Add any JS scripts from components (not modules, raw inline or preloaded)
@@ -4809,7 +4832,5 @@ function HTML.App(config)
         children = HTML.fragment(final_body_children)
     })
 end
-
-
 
 return HTML
